@@ -1,5 +1,5 @@
 """TAK MESH TOC: the one-config-file behaviour, end to end.
-  - deckcommon.apply_deck: [deck] wins, real conflicts reported, built-in defaults silent, MESH_ADDR auto
+  - deckcommon.apply_deck: [deck] wins, real conflicts reported, built-in defaults silent, MESH_ADDR auto reaches every program
   - ONE deck.ini runs the REAL bridge, Deck Chat and dashboard:
       bridge identity to a fake TAK server and chat's mesh position report carry the SAME
       callsign / UID / symbol / team from [deck]; a conflicting [bridge] value is ignored and logged;
@@ -31,7 +31,7 @@ cp.read_string("[deck]\nCALLSIGN = RAVEN\nMESH_ADDR = auto\nGPS = off\n[bridge]\
 nb = dk.apply_deck(cp, "bridge", "bridge")
 check("unit: [deck] callsign wins in [bridge]", cp.get("bridge", "BRIDGE_CALLSIGN") == "RAVEN")
 check("unit: the conflict is reported", any("BRIDGE_CALLSIGN = OTHER ignored" in n for n in nb), nb)
-check("unit: MESH_ADDR = auto leaves the bridge's real address", cp.get("bridge", "PYTAK_MULTICAST_LOCAL_ADDR") == "10.41.0.60")
+check("unit: MESH_ADDR = auto reaches the bridge (it resolves it from the mesh port)", cp.get("bridge", "PYTAK_MULTICAST_LOCAL_ADDR") == "auto")
 nc = dk.apply_deck(cp, "chat", "chat", {"CALLSIGN": "DECK", "MESH_LOCAL_ADDR": "auto"})
 check("unit: chat value equal to its built-in default is replaced silently", cp.get("chat", "CALLSIGN") == "RAVEN" and not nc, nc)
 check("unit: MESH_ADDR = auto reaches chat", cp.get("chat", "MESH_LOCAL_ADDR") == "auto")

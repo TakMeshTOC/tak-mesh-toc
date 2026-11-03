@@ -28,7 +28,8 @@ import time
 REAL = os.path.realpath(__file__)
 RELEASE = os.path.dirname(os.path.dirname(REAL))            # .../releases/<version>
 sys.path.insert(0, os.path.join(RELEASE, "common"))
-from deckcommon import apply_deck, suite_version, theme_note  # noqa: E402
+from deckcommon import apply_deck, suite_version, theme_note, mesh_iface, iface_ipv4  # noqa: E402
+from meshwatch import eui64_lladdr  # noqa: E402
 
 NAME = "TAK MESH TOC"
 HOME = os.path.expanduser("~")
@@ -300,12 +301,21 @@ def check_config():
     if theme_note(sec(cp, "deck", "THEME")):
         line("info", "Look", theme_note(sec(cp, "deck", "THEME")) + ". You can delete that line from [deck]")
     mesh = sec(cp, "deck", "MESH_ADDR") or sec(cp, "bridge", "PYTAK_MULTICAST_LOCAL_ADDR")
-    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", mesh or ""):
-        line("fail", "Mesh address", "MESH_ADDR in [deck] must be this deck's IP on the mesh port (now %r)" % mesh)
+    if (mesh or "").strip().lower() == "auto":
+        iface = sec(cp, "deck", "MESH_IFACE") or sec(cp, "chat", "MESH_IFACE") or sec(cp, "dashboard", "MESH_IFACE") or "eth0"
+        rc, out = sh("ip", "-4", "-o", "addr", "show", "dev", iface)
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out or "") if rc == 0 else None
+        if m:
+            line("ok", "Mesh address", "auto: %s on %s (followed if the node hands out a new one)" % (m.group(1), iface))
+        else:
+            line("warn", "Mesh address", "auto: %s has no address right now (node unplugged? server-only until it is back)" % iface)
+    elif not re.match(r"^\d+\.\d+\.\d+\.\d+$", mesh or ""):
+        line("fail", "Mesh address", "MESH_ADDR in [deck] must be auto or this deck's IP on the mesh port (now %r)" % mesh)
     else:
         rc, out = sh("ip", "-4", "-o", "addr", "show")
         if rc == 0 and out and (mesh + "/") not in out:
-            line("warn", "Mesh address", "%s is not on any interface right now (node unplugged? server-only until it is back)" % mesh)
+            line("warn", "Mesh address", "%s is not on any interface right now (node unplugged, or the node gave the deck "
+                 "a new address? MESH_ADDR = auto in [deck] follows it)" % mesh)
         else:
             line("ok", "Mesh address", mesh)
     check_certs(cp)
@@ -428,7 +438,10 @@ def check_voice(cp):
         else:
             line("ok", "Voice: Mumble server", "reachable, certificate matches the pin")
     st, age = voice_status_file(cp)
-    if st is None or age > 10:
+    viface = mesh_iface(cp, "voice")
+    if (st is None or age > 10) and not iface_ipv4(viface):
+        line("info", "Voice: gateway", "waiting for the mesh (%s has no address yet; it starts when the node is plugged in)" % viface)
+    elif st is None or age > 10:
         line("fail", "Voice: gateway", "not running (meshtoc logs voice)")
     else:
         for g in st.get("groups") or []:
@@ -446,6 +459,41 @@ def check_voice(cp):
         line("warn", "Voice: firewall", "UFW is on and blocks the talk groups: sudo ufw allow in on eth0 proto udp to any port 38801:38810")
 
 
+def nm_connection(iface):
+    """The NetworkManager connection on this port, or ''."""
+    rc, out = sh("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active")
+    for ln in out.splitlines() if rc == 0 else []:
+        name, _, dev = ln.rpartition(":")
+        if dev == iface:
+            return name.replace("\\:", ":")
+    return ""
+
+
+def check_mesh_list(cp):
+    """Ops lists the mesh's nodes from OpenMANET's alfred, which only answers an EUI-64 IPv6 address."""
+    if cp is not None and sec(cp, "dashboard", "MESH_DISCOVERY", "alfred").lower() != "alfred":
+        return
+    iface = mesh_iface(cp, "dashboard") if cp is not None else "eth0"
+    if eui64_lladdr(iface):
+        line("ok", "Mesh node list", "%s can read the mesh's own node list (alfred)" % iface)
+    else:
+        conn = nm_connection(iface)
+        fix = ('sudo nmcli connection modify "%s" ipv6.addr-gen-mode eui64 && sudo nmcli connection up "%s"' % (conn, conn)
+               if conn else "run install.sh again, or give %s an EUI-64 IPv6 address" % iface)
+        # info, not a warning: Ops still works from NODE_IP, and a deck with IPv6 off on purpose shouldn't fail its check
+        line("info", "Mesh node list", "%s has no EUI-64 IPv6 address, so Ops lists only the nodes in NODE_IP. Fix: %s" % (iface, fix))
+    p = os.path.expanduser(sec(cp, "dashboard", "MESH_STATUS_FILE", "~/mesh_status.json") if cp is not None else "~/mesh_status.json")
+    try:
+        with open(p) as f:
+            m = json.load(f)
+        if time.time() - float(m.get("now", 0)) < 120:
+            sl = m.get("slowest_mbps")
+            line("info", "Mesh", "%s of %s nodes answer, %s radio link(s)%s" % (
+                m.get("nodes_up"), m.get("nodes_total"), m.get("links"), ", slowest %.1f Mbit/s" % sl if sl is not None else ""))
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def cmd_check():
     print("%s %s  (%s)" % (NAME, suite_version(), RELEASE))
     check_files()
@@ -453,6 +501,7 @@ def cmd_check():
     cp = check_config()
     check_system()
     check_runtime(cp)
+    check_mesh_list(cp)
     check_voice(cp)
     fails, warns, todos = results.count("fail"), results.count("warn"), results.count("todo")
     if todos and not fails and not warns:

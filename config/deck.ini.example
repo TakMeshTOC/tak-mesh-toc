@@ -5,7 +5,7 @@
 #
 # A NEW INSTALL needs two things set by you:
 #   1. [bridge] COT_URL and the three PYTAK_TLS_ certificate lines (your TAK server)
-#   2. [deck] MESH_ADDR, if the installer could not find this deck's address on the mesh port
+#   2. nothing else: [deck] MESH_ADDR = auto finds this deck's address on the mesh port by itself
 # Everything else works as it is.
 
 [deck]
@@ -14,8 +14,10 @@ CALLSIGN = DECK
 # Stable ID for the deck. Blank = DECK-<hostname>. Bridge and chat always use the same one.
 UID =
 # This deck's IP on the network port that goes to the mesh node (NOT its Wi-Fi or VPN address).
-# The installer fills it in from eth0.
-MESH_ADDR = 10.41.0.50
+# auto = whatever address the mesh port (MESH_IFACE, usually eth0) has. The bridge and Voice follow it if the node
+# hands out a new one (a node reboot can), so the deck never ends up on an old address. Or set a fixed IP here
+# (then give the deck a static lease on the node, so the node always hands out that one).
+MESH_ADDR = auto
 # Node unplugged or off? The deck runs server-only (Chat talks to the server; DECK shows on server maps)
 # and switches to mesh + server by itself when the node is plugged in.
 # The deck's map symbol (a CoT type). a-f-G-U-C = friendly ground unit (the blue box with "CBT")
@@ -73,6 +75,9 @@ LOCAL_CHAT_COPY = udp://127.0.0.1:17013
 # IDENTIFY = 1
 # IDENTIFY_INTERVAL = 300           (seconds between repeats, minimum 30)
 # BRIDGE_VISIBLE = 0                (1 = show DECK on maps; set BRIDGE_LAT / BRIDGE_LON first)
+# DECK_STATUS = on                  (DECK's report carries the deck's health in its remarks, for server users who
+#                                    tap DECK: CPU temperature, internet link and Wi-Fi signal, mesh (nodes and the
+#                                    slowest radio link, from Ops), uptime, version. off = leave it out)
 
 # Chat's direct messages to people on the server go through this local port (server only).
 # Needed by Chat.
@@ -165,10 +170,18 @@ MEDIAMTX_HLS_PORT = 8888
 # Stream path offered in the player when the API is unavailable
 DEFAULT_STREAM = live
 
-# The mesh nodes Ops pings to show the mesh link. List several, comma separated, with names in the same order:
-#   NODE_IP = 10.41.254.10, 10.41.254.20
+# Mesh nodes. Ops lists every node the mesh itself knows (OpenMANET's alfred gossip, no login), with each node's
+# CPU, load, memory and uptime and the speed of every radio link. Nothing to type: new nodes show up by themselves.
+# alfred needs an EUI-64 IPv6 address on MESH_IFACE (install.sh sets it; meshtoc check says if it's missing).
+#   MESH_DISCOVERY = alfred          (off = only the nodes in NODE_IP)
+#   LINK_GOOD_MBPS = 3               (radio link GOOD at or above this, POOR below LINK_POOR_MBPS, OK between)
+#   LINK_POOR_MBPS = 1
+#   MESH_STATUS_FILE = ~/mesh_status.json   (summary for the DECK status line on the TAK map)
+# Optional: name nodes yourself (these names win), comma separated, names in the same order:
+#   NODE_IP = 10.41.0.1, 10.41.254.10
 #   NODE_NAME = node 1, node 2
-# The link is OK when any of them answers. Blank NODE_IP = find the nodes on MESH_IFACE (the ones with a settings page).
+# The link is OK when any node answers. With no list from the mesh and blank NODE_IP, Ops looks for nodes on
+# MESH_IFACE (the ones with a settings page).
 NODE_NAME = mesh node
 NODE_IP =
 

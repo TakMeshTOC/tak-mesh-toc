@@ -442,7 +442,7 @@ def plan(session, choices, certs_dir):
         match = [i for i in interfaces() if i["name"] == iface]
         if not match and not choices.get("mesh_addr"):
             raise WizardError("that network port has no address right now")
-        deck["MESH_ADDR"] = choices.get("mesh_addr") or match[0]["addr"]
+        deck["MESH_ADDR"] = (choices.get("mesh_addr") or "").strip() or "auto"   # auto follows the node's DHCP
         changes["chat"] = {"MESH_IFACE": iface}
         changes["dashboard"]["MESH_IFACE"] = iface
     return changes

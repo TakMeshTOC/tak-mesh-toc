@@ -51,6 +51,10 @@ DEFAULTS = {
     "DEFAULT_STREAM": "live",         # path offered in the player when the API is off
     "NODE_NAME": "mesh node",         # names for the NODE_IP addresses, in the same order (comma separated)
     "NODE_IP": "",                    # the mesh node(s) to ping, comma separated; blank = find them on MESH_IFACE
+    "MESH_DISCOVERY": "alfred",       # alfred = also list every node the mesh itself knows (OpenMANET gossip, no login); off = NODE_IP only
+    "MESH_STATUS_FILE": "~/mesh_status.json",   # mesh summary for the bridge's DECK status line
+    "LINK_GOOD_MBPS": "3",            # radio link grades: GOOD at or above this ...
+    "LINK_POOR_MBPS": "1",            # ... POOR below this, OK in between
     "EVENT_FILE": "~/dashboard_events.jsonl",
     "INTERNET_HOST": "1.1.1.1",
     "INTERNET_PORT": "443",
@@ -88,7 +92,7 @@ def load_config(path):
             cfg[k.upper()] = v.strip()
     if not cfg["BRIDGE_INI"]:
         cfg["BRIDGE_INI"] = used or os.path.expanduser("~/manet_mesh_bridge/deck.ini")
-    for k in ("BRIDGE_STATUS_FILE", "VOICE_STATUS_FILE", "BRIDGE_INI", "EVENT_FILE", "HISTORY_FILE", "CAPTURE_DIR"):
+    for k in ("BRIDGE_STATUS_FILE", "VOICE_STATUS_FILE", "BRIDGE_INI", "EVENT_FILE", "HISTORY_FILE", "CAPTURE_DIR", "MESH_STATUS_FILE"):
         cfg[k] = os.path.expanduser(cfg[k])
     if not cfg["BRIDGE_UNIT"]:
         cfg["BRIDGE_UNIT"] = cfg["BRIDGE_SERVICE"]
@@ -341,6 +345,7 @@ class History:
         self.lock = threading.Lock()
         self.spark = deque(maxlen=360)       # one sample per ~10 s = last hour
         self.ping = deque(maxlen=400)        # every node ping: (t, rtt|None)
+        self.links = deque(maxlen=130)       # radio link speeds, one sample per ~30 s = last hour: (t, {"A|B": mbps})
         self.minutes = {}                    # minute index -> {"b","s","v","x"} worst level that minute
         self.cur_idx = None
         self.cur = None
@@ -375,6 +380,12 @@ class History:
         with self.lock:
             self.ping.append((round(t, 1), rtt))
 
+    def add_links(self, t, speeds):
+        with self.lock:
+            if self.links and t - self.links[-1][0] < 29:
+                return
+            self.links.append((round(t, 1), dict(speeds)))
+
     def tick(self, now, levels):
         """levels: {"b":0..2, "s":..., "v":..., "x":...} for this moment."""
         idx = int(now // 60)
@@ -407,10 +418,12 @@ class History:
         with self.lock:
             sp = list(self.spark)
             ping = list(self.ping)[-300:]
+            links = list(self.links)
             minutes = dict(self.minutes)
             if self.cur_idx is not None and self.cur:
                 minutes[self.cur_idx] = self.cur
-        out = {"now": now, "spark": {"step": 10, "t0": sp[0]["t"] if sp else now}, "ping": ping}
+        out = {"now": now, "spark": {"step": 10, "t0": sp[0]["t"] if sp else now}, "ping": ping,
+               "links": [[t, v] for t, v in links]}
         for k in ("msgs", "rtt", "temp", "kbps", "load", "srv"):
             out["spark"][k] = [x.get(k) for x in sp]
         end = int(now // 60)
@@ -433,6 +446,7 @@ METRICS = {
     "mesh_rtt": "Node ping (ms)",
     "mesh_loss": "Node ping loss (%)",
     "server_rtt": "Server connect time (ms)",
+    "link_mbps": "Slowest radio link (Mbit/s)",
 }
 TILES = ("none", "bridge", "server", "video", "mesh")
 # Same format as in deck.ini:  metric  >|<  limit  [for SECONDS]  warn|bad  [tile]
@@ -693,6 +707,7 @@ def setup_checks(cfg, snap, control, alerts):
 # ----------------------------------------------------------------- collector
 # ---- shared code: GPS/MGRS, team icon, the [deck] config section, suite version -> ../common/deckcommon.py
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+from meshwatch import MeshWatch, grade as link_grade  # noqa: E402
 from deckcommon import (GpsWatch, to_mgrs, latlon_to_utm, TEAMS, ROLES, team_xml,  # noqa: E402,F401
                         apply_deck, suite_version, font_file)
 
@@ -756,6 +771,9 @@ class Collector(threading.Thread):
             h, _, p = cfg.get("GPS_HOST", "127.0.0.1:2947").partition(":")
             self.gps = GpsWatch(h or "127.0.0.1", p or 2947)
             self.gps.start()
+        self.meshwatch = None
+        if cfg.get("MESH_DISCOVERY", "alfred").strip().lower() == "alfred":
+            self.meshwatch = MeshWatch(cfg.get("MESH_IFACE", "eth0")).start()
 
     # -- slow-check cache
     def cached(self, name, ttl, fn):
@@ -976,27 +994,64 @@ class Collector(threading.Thread):
                 del self._found[ip]
         return sorted(self._found, key=lambda ip: [int(x) for x in ip.split(".")])
 
+    def mesh_view(self):
+        """What the mesh itself reports (alfred + each node's status): {ip: {name, health}}, links, discovery state."""
+        if not self.meshwatch:
+            return {}, [], {"source": "off", "ok": False, "why": "MESH_DISCOVERY = off"}
+        snap = self.meshwatch.snapshot()
+        listed = {n["ip"]: n for n in snap["nodes"]}
+        st = snap["state"]
+        links = snap["links"] if snap["links_age"] is not None and snap["links_age"] < 120 else []
+        return listed, links, {"source": "alfred", "ok": st["ok"], "why": st.get("why", ""), "servers": st.get("servers", 0)}
+
     def _ping_nodes(self):
         named = self.nodes_cfg()
-        nodes = named or [(ip, ip) for ip in self.found_nodes()]
+        listed, _, _ = self.mesh_view()
+        nodes = [(n, ip, "named") for n, ip in named]
+        have = {ip for _, ip in named}
+        for ip, n in sorted(listed.items(), key=lambda kv: kv[1]["name"].lower()):
+            if ip not in have:
+                nodes.append((n["name"], ip, "mesh"))
+                have.add(ip)
+        if not nodes:
+            nodes = [(ip, ip, "port") for ip in self.found_nodes()]
         rtts = []
         if nodes:
             with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as ex:
                 rtts = list(ex.map(lambda n: ping(n[1]), nodes))
         now = time.time()
-        res = [{"name": n, "ip": ip, "ok": r is not None, "rtt_ms": r, "found": not named, "nearest": False}
-               for (n, ip), r in zip(nodes, rtts)]
+        res = []
+        for (n, ip, src), r in zip(nodes, rtts):
+            h = (listed.get(ip) or {}).get("health") or {}
+            res.append({"name": n, "ip": ip, "ok": r is not None, "rtt_ms": r, "found": src == "port", "source": src,
+                        "listed": ip in listed, "mesh_name": (listed.get(ip) or {}).get("name", ""), "nearest": False,
+                        "cpu_c": h.get("cpu_c"), "load_pct": h.get("load_pct"), "mem_pct": h.get("mem_pct"), "uptime": h.get("uptime")})
         up = [x for x in res if x["ok"]]
         best = min(up, key=lambda x: x["rtt_ms"]) if up else None
         if best:
             best["nearest"] = True
-        if not named:
-            for x in up:
+        for x in up:
+            if x["source"] == "port":
                 self._found[x["ip"]] = now
         r = best["rtt_ms"] if best else None
         self.history.add_ping(now, r)
         self.pings.append(r)
         return res
+
+    def mesh_links(self, nodes):
+        """Radio links between nodes from alfred, named the way the node list names them, graded by throughput."""
+        _, links, _ = self.mesh_view()
+        disp = {x["mesh_name"]: x["name"] for x in nodes if x.get("mesh_name")}
+        try:
+            good, poor = float(self.cfg.get("LINK_GOOD_MBPS", 3)), float(self.cfg.get("LINK_POOR_MBPS", 1))
+        except ValueError:
+            good, poor = 3.0, 1.0
+        out = []
+        for l in links:
+            mbps = round(l["kbps"] / 1000.0, 1) if l.get("kbps") else None
+            out.append({"a": disp.get(l["a"], l["a"]), "b": disp.get(l["b"], l["b"]), "mbps": mbps,
+                        "grade": link_grade(mbps, good, poor)})
+        return out, good, poor
 
     def voice(self):
         """manet-voice's status, cut down to what the voice row shows. None = voice was never set up."""
@@ -1038,8 +1093,19 @@ class Collector(threading.Thread):
             tile, text, state = "bad", "NODE LOST", "NODE LOST"
         else:
             tile, text, state = "warn", "NO NODE", "NO NODE FOUND"
+        links, good, poor = self.mesh_links(nodes)
+        _, _, disc = self.mesh_view()
+        n_up, n_all = sum(1 for x in nodes if x["ok"]), len(nodes)
+        if n_all > 1 and deck["iface_up"] and ok and deck["mtu_ok"]:   # several nodes: say how many answer
+            text = "%d NODES" % n_all if n_up == n_all else "%d OF %d NODES" % (n_up, n_all)
+            if n_up < n_all:
+                tile, state = "warn", "NODE LOST"
+        speeds = [l["mbps"] for l in links if l["mbps"] is not None]
+        slowest = min(speeds) if speeds else None
         first = best or (nodes[0] if nodes else None)
-        return {"node_name": first["name"] if first else "mesh node", "node_ip": first["ip"] if first else "", "node_ok": ok,
+        return {"links": links, "link_good": good, "link_poor": poor, "slowest_mbps": slowest, "discovery": disc,
+                "nodes_up": n_up, "nodes_total": n_all,
+                "node_name": first["name"] if first else "mesh node", "node_ip": first["ip"] if first else "", "node_ok": ok,
                 "node_rtt_ms": best["rtt_ms"] if best else None, "nodes": nodes, "tile": tile, "text": text, "state": state,
                 "traffic": traffic, "traffic_age": t_age,
                 "loss_pct": loss, "rtt_avg": round(sum(got) / len(got), 1) if got else None,
@@ -1059,6 +1125,44 @@ class Collector(threading.Thread):
             return {"state": "sleep", "speed": 1, "text": "Connected, no traffic for the last minute"}
         return {"state": "hop", "speed": round(0.7 + min(r, 120) / 120.0 * 1.5, 2),
                 "text": "Relaying %d messages per minute" % r}
+
+    def link_events(self, links):
+        """One event per change: a link turning POOR, recovering, appearing or going away."""
+        cur = {l["a"] + " \u2194 " + l["b"]: l for l in links}
+        old = self.prev.get("links")
+        self.prev["links"] = {k: l["grade"] for k, l in cur.items()}
+        if old is None:
+            return
+        for k, l in cur.items():
+            g, was = l["grade"], old.get(k)
+            sp = "%s Mbit/s" % l["mbps"] if l["mbps"] is not None else "no speed reported"
+            if was is None:
+                self.events.add("ok", "Radio link %s up (%s %s)" % (k, sp, g), "mesh")
+            elif g == "POOR" and was != "POOR":
+                self.events.add("warn", "Radio link %s POOR (%s)" % (k, sp), "mesh")
+            elif was == "POOR" and g != "POOR":
+                self.events.add("ok", "Radio link %s back to %s (%s)" % (k, g, sp), "mesh")
+        for k in old:
+            if k not in cur:
+                self.events.add("warn", "Radio link %s gone" % k, "mesh")
+
+    def write_mesh_status(self, mesh, now):
+        """A small summary for the bridge (the DECK status line on the TAK map). Written atomically; best effort."""
+        path = self.cfg.get("MESH_STATUS_FILE")
+        if not path or path.lower() == "off":
+            return
+        if now - self.prev.get("mesh_status_t", 0) < 10:
+            return
+        self.prev["mesh_status_t"] = now
+        out = {"now": now, "nodes_total": mesh["nodes_total"], "nodes_up": mesh["nodes_up"], "links": len(mesh["links"]),
+               "slowest_mbps": mesh["slowest_mbps"], "lost": [n["name"] for n in mesh["nodes"] if not n["ok"]]}
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(out, f)
+            os.replace(tmp, path)
+        except OSError as exc:
+            warn_once("mesh-status", "cannot write %s (%s)" % (path, exc))
 
     # -- one pass
     def collect(self):
@@ -1093,6 +1197,7 @@ class Collector(threading.Thread):
             "bridge_idle_min": ((now - self.last_traffic) / 60.0) if bridge["running"] else None,
             "cpu_temp": deck["cpu_temp"], "mem_pct": deck["mem_pct"],
             "mesh_rtt": mesh["node_rtt_ms"], "mesh_loss": mesh["loss_pct"], "server_rtt": server["rtt_ms"],
+            "link_mbps": mesh["slowest_mbps"],
         }
         active = self.alerts.evaluate(metrics, now)
         rank = {"ok": 0, "info": 0, "warn": 1, "bad": 2}
@@ -1118,8 +1223,21 @@ class Collector(threading.Thread):
         self.changed("srv_est", server["established"], "Server link established", "Server link lost", cat="server")
         self.changed("srv_reach", server["reachable"], "Server reachable again", "Server unreachable (no bridge link, no ping reply)", cat="server")
         self.changed("mesh_up", mesh["tile"] != "bad", "Mesh link back", "Mesh link lost (no node answers, no mesh traffic)", cat="mesh")
+        known = self.prev.get("mesh_known")
+        now_known = {n["ip"]: n["name"] for n in mesh["nodes"] if n.get("listed")}
+        if known is not None:
+            for ip, name in now_known.items():
+                if ip not in known:
+                    self.events.add("ok", "%s joined the mesh (%s)" % (name, ip), "mesh")
+            for ip, name in known.items():
+                if ip not in now_known:
+                    self.events.add("info", "%s left the mesh's node list" % name, "mesh")
+        self.prev["mesh_known"] = now_known
         for n in mesh["nodes"]:
-            self.changed("node:" + n["ip"], n["ok"], "%s answers again" % n["name"], "%s not answering" % n["name"], level_down="warn", cat="mesh")
+            self.changed("node:" + n["ip"], n["ok"], "%s answers again" % n["name"], "%s lost (not answering)" % n["name"], level_down="warn", cat="mesh")
+        self.link_events(mesh["links"])
+        self.history.add_links(now, {l["a"] + "|" + l["b"]: l["mbps"] for l in mesh["links"]})
+        self.write_mesh_status(mesh, now)
         self.changed("mtu_ok", deck["mtu_ok"], "MTU back to %s" % deck["mtu_expected"], "MTU is %s (expected %s)" % (deck["mtu"], deck["mtu_expected"]), level_down="warn", cat="mesh")
         if deck["ntp_synced"] is not None:
             self.changed("ntp", deck["ntp_synced"], "Clock synced", "Clock not synced", level_down="warn", cat="deck")
@@ -1235,7 +1353,7 @@ def mock_status(scenario, events):
             "bridge": {"level": sev, "text": {"hop": "RELAYING", "sleep": "IDLE", "alert": "DEGRADED", "down": "DOWN"}[state]},
             "server": {"level": "bad" if alert else "ok", "text": "UNREACHABLE" if alert else "CONNECTED"},
             "video": {"level": "warn", "text": "1 STALLED"} if scenario == "alert" else {"level": "ok", "text": "1 LIVE"},
-            "mesh": {"level": "warn" if scenario == "alert" else "ok", "text": "LINK OK"},
+            "mesh": {"level": "warn" if scenario == "alert" else "ok", "text": "2 OF 3 NODES" if scenario == "alert" else "3 NODES"},
         },
         "activity": {"state": state, "speed": speed, "text": text},
         "alerts": alerts,
@@ -1257,11 +1375,21 @@ def mock_status(scenario, events):
         "deck": {"iface": "eth0", "iface_ip": "10.41.0.50", "iface_up": True, "mtu": 1460, "mtu_expected": 1460, "mtu_ok": True,
                  "internet": True, "cpu_temp": 52.1, "load": [0.42, 0.51, 0.47], "cpus": 4, "mem_pct": 31, "uptime": 86400 * 2 + 3600,
                  "throttled": None, "hostname": "deck", "ntp_synced": scenario != "alert"},
-        "mesh": {"node_name": "node 1", "node_ip": "10.41.0.1", "node_ok": True, "node_rtt_ms": 2.1, "tile": "warn" if scenario == "alert" else "ok",
-                 "text": "LINK OK", "state": "CHECK LINK" if scenario == "alert" else "LINK OK", "traffic": rate > 0, "traffic_age": None if rate == 0 else 2.4,
-                 "nodes": [{"name": "node 1", "ip": "10.41.0.1", "ok": True, "rtt_ms": 2.1, "found": False, "nearest": True},
-                           {"name": "node 2", "ip": "10.41.0.2", "ok": scenario != "alert", "rtt_ms": None if scenario == "alert" else 4.6,
-                            "found": False, "nearest": False}],
+        "mesh": {"node_name": "NODE_1", "node_ip": "10.41.0.1", "node_ok": True, "node_rtt_ms": 2.1, "tile": "warn" if scenario == "alert" else "ok",
+                 "text": "2 OF 3 NODES" if scenario == "alert" else "3 NODES", "state": "NODE LOST" if scenario == "alert" else "LINK OK",
+                 "traffic": rate > 0, "traffic_age": None if rate == 0 else 2.4,
+                 "nodes_up": 2 if scenario == "alert" else 3, "nodes_total": 3, "link_good": 3.0, "link_poor": 1.0,
+                 "slowest_mbps": None if scenario == "alert" else round(2.4 + 0.3 * math.sin(t / 7), 1),
+                 "discovery": {"source": "alfred", "ok": True, "why": "", "servers": 3},
+                 "links": [{"a": "NODE_1", "b": "NODE_2", "mbps": 7.1, "grade": "GOOD"}] + ([] if scenario == "alert" else
+                          [{"a": "NODE_2", "b": "NODE_3", "mbps": round(2.4 + 0.3 * math.sin(t / 7), 1), "grade": "OK"}]),
+                 "nodes": [{"name": "NODE_1", "ip": "10.41.0.1", "ok": True, "rtt_ms": 2.1, "found": False, "nearest": True, "source": "named",
+                            "listed": True, "mesh_name": "NODE_1", "cpu_c": 48.2, "load_pct": 2.1, "mem_pct": 8.0, "uptime": 101000},
+                           {"name": "NODE_2", "ip": "10.41.254.10", "ok": True, "rtt_ms": 4.6, "found": False, "nearest": False, "source": "mesh",
+                            "listed": True, "mesh_name": "NODE_2", "cpu_c": 45.8, "load_pct": 1.4, "mem_pct": 7.3, "uptime": 960},
+                           {"name": "NODE_3", "ip": "10.41.254.20", "ok": scenario != "alert", "rtt_ms": None if scenario == "alert" else 9.8,
+                            "found": False, "nearest": False, "source": "mesh", "listed": True, "mesh_name": "NODE_3",
+                            "cpu_c": 51.0, "load_pct": 3.2, "mem_pct": 9.1, "uptime": 5400}],
                  "loss_pct": 31.0 if scenario == "alert" else 0.0, "rtt_avg": 2.3, "rtt_min": 1.6, "rtt_max": 4.8, "jitter": 0.6, "samples": 30},
         "voice": {"running": True, "groups": [
             {"name": "TG1", "bridged": True, "mumble_up": True, "mesh": 3, "mumble": 2,
@@ -1345,7 +1473,13 @@ def mock_history():
             rows[name].append(c)
     for name, v in rows.items():
         strip[name] = "".join(v)
-    return {"now": t, "spark": sp, "ping": ping, "strip": strip}
+    links = []
+    for i in range(120):                     # one hour at 30 s: NODE_2 walks out and back on a range test
+        x = t - (119 - i) * 30
+        dip = max(0.0, 1 - abs(i - 70) / 25.0)
+        links.append([round(x, 1), {"NODE_1|NODE_2": round(max(0.3, 7.1 - 6.6 * dip + r.random() * 0.4), 1),
+                                    "NODE_2|NODE_3": round(2.4 + 0.4 * math.sin(x / 300.0) + r.random() * 0.2, 1)}])
+    return {"now": t, "spark": sp, "ping": ping, "strip": strip, "links": links}
 
 
 def random_for(seed):

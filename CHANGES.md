@@ -1,5 +1,43 @@
 # Changes
 
+## 3.1.8: Ops sees the whole mesh
+- **Ops finds the mesh nodes by itself.** It reads the node list OpenMANET's nodes share with each other (alfred), with
+  no login, so a node added to the mesh shows up without editing `deck.ini`. Nodes named in `NODE_IP` keep your names.
+  Before, Ops only saw nodes listed in `NODE_IP` or ones the deck happened to have talked to, and listing any node
+  in `NODE_IP` turned the search off.
+- **Node health, no password:** each node's CPU temperature, load, memory and uptime, from the node's own status call.
+- **Radio links:** the throughput of every link between nodes (batman-adv's own figure, the slower direction),
+  graded GOOD / OK / POOR (`LINK_GOOD_MBPS = 3`, `LINK_POOR_MBPS = 1`). New alert metric `link_mbps` (slowest link).
+- **New MESH tab** in place of TRENDS: node table, radio links, link speed over the last hour, node ping, 24-hour
+  history. The MESH + DECK panel opens with a one-line summary (`3 NODES · ALL OK`, slowest link, any node lost).
+  The messages-per-minute graph is gone (the TAK BRIDGE tile has it); CPU temperature is a sparkline in the panel.
+- The MESH LINK tile counts nodes (`3 NODES`, `2 OF 3 NODES` in amber when one stops answering).
+- Event log: a node joining the mesh, a node lost, a radio link coming up, turning POOR, recovering or going away.
+  Once per change.
+- **DECK's report carries the deck's health** in its remarks, for server users who tap DECK on the map:
+  `CPU 52C | WAN wlan0 -61 dBm | mesh 2 nodes, slowest 7.1 Mbit/s | up 6h12m | TAK MESH TOC 3.1.8`.
+  `DECK_STATUS = off` in `[bridge]` leaves it out.
+- `install.sh` sets the mesh port's NetworkManager connection to `ipv6.addr-gen-mode eui64` (alfred only answers that
+  kind of IPv6 address; the port blinks once). Skipped when IPv6 is off on that connection.
+- `meshtoc check`: a "Mesh node list" line (with the exact fix if the address is missing) and the mesh summary;
+  Voice says "waiting for the mesh" instead of failing when no node is plugged in.
+- New tests: `meshwatch_test.py` (with root and an alfred binary, a real alfred server answers), `deck_status_test.py`.
+
+## 3.1.7: the deck follows its mesh address
+- **`MESH_ADDR = auto`** in `[deck]`: the deck uses whatever address its mesh port (`MESH_IFACE`, usually eth0) has.
+  The bridge and Voice look it up at start and check every 5 s; when the node hands out a different address (an
+  OpenWrt node forgets its leases when it reboots), they restart themselves on the new one and log why. Before,
+  the bridge kept using the old address and nothing reached the mesh ("Network is unreachable") until someone
+  noticed. An address that goes away (node unplugged) is not a change: the deck waits server-only, as before.
+  No address at start = server-only until it appears. A fixed MESH_ADDR works as before.
+- New installs and the setup wizard write `MESH_ADDR = auto`. `meshtoc check` shows the address auto found, and
+  suggests auto when a fixed address has gone missing.
+- `[deck] MESH_ADDR = auto` no longer breaks Voice (it took "auto" as an address).
+- Updates no longer put back desktop icons you deleted; the menu entries are always kept. README: use the menu or
+  the taskbar if the desktop asks "Execute?" for each launch.
+- New test `meshaddr_test.py` (with root: the real bridge on a test port whose address is removed, restored and
+  changed under it).
+
 ## 3.1.6: server DMs reach iTAK on the mesh
 - **DMs from server phones to an iPhone on the mesh now show in iTAK.** The bridge delivered them, but iTAK silently
   drops a direct message that still carries the server's addressing (`<marti><dest .../></marti>`); ATAK ignores it.

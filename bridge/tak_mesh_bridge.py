@@ -47,7 +47,7 @@ try:
 except ImportError:          # bridge still works for XML-only senders
     takproto = None
 from datetime import datetime, timezone
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import quoteattr, escape as xml_escape
 
 MESH_HDR = b"\xbf\x01\xbf"
 
@@ -956,11 +956,122 @@ def own_uid(cfg):
 # ---- shared code: GPS/MGRS, team icon, the [deck] config section, suite version -> ../common/deckcommon.py
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 from deckcommon import (GpsWatch, to_mgrs, latlon_to_utm, TEAMS, ROLES, team_xml,  # noqa: E402,F401
-                        apply_deck, suite_version)
+                        apply_deck, suite_version, iface_ipv4, mesh_iface, is_auto, watch_mesh_addr)
+
+
+class MeshAddr:
+    """[deck] MESH_ADDR = auto: the bridge uses the mesh port's current address. If the node hands out a new
+    one (a node reboot can), the bridge restarts itself and systemd starts it again on the new address.
+    No address yet (node unplugged or off) = server-only, the same as a fixed address that isn't there."""
+    auto = False
+    missing = False
+    iface = "eth0"
+
+    @classmethod
+    def setup(cls, parser, cfg):
+        cls.iface = mesh_iface(parser, "bridge")
+        if not is_auto(cfg.get("PYTAK_MULTICAST_LOCAL_ADDR", "")):
+            return
+        cls.auto = True
+        ip = iface_ipv4(cls.iface)
+        if ip:
+            log.info("Mesh address auto: %s on %s (followed if the node hands out a new one)", ip, cls.iface)
+        else:
+            log.warning("Mesh address auto: %s has no address yet (node unplugged or off?). Server-only until it has one",
+                        cls.iface)
+        cls.missing = ip is None
+        cfg["PYTAK_MULTICAST_LOCAL_ADDR"] = ip or "127.0.0.1"   # placeholder: the mesh readers wait while missing
+
+        def changed(old, new):
+            log.warning("Mesh address on %s is now %s (was %s): restarting the bridge to follow it",
+                        cls.iface, new, old or "none")
+            logging.shutdown()
+            os._exit(3)                           # systemd restarts it; the outbox is already on disk
+        watch_mesh_addr(cls.iface, ip, changed)
 
 
 
-def bridge_identity(cfg, now=None, pos=None, live=False):
+# ---- the deck's own health, in its position report (DECK_STATUS) -------------------------------------
+# Server users tap DECK on the map and see how the deck is doing. TAK has no standard field for temperature or
+# signal, so the readings go in <remarks>, which every TAK client shows. Each reading is skipped if it can't be read.
+THERMAL = "/sys/class/thermal/thermal_zone0/temp"
+PROC_ROUTE = "/proc/net/route"
+PROC_WIRELESS = "/proc/net/wireless"
+PROC_UPTIME = "/proc/uptime"
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def wan_status(mesh_if=""):
+    """'WAN wlan0 -61 dBm' (Wi-Fi), 'WAN eth1' (wired or modem), or '' when there is no default route."""
+    iface = ""
+    for line in _read(PROC_ROUTE).splitlines()[1:]:
+        f = line.split()
+        if len(f) > 7 and f[1] == "00000000" and f[7] == "00000000" and f[0] != mesh_if:
+            iface = f[0]
+            break
+    if not iface:
+        return ""
+    for line in _read(PROC_WIRELESS).splitlines()[2:]:
+        name, _, rest = line.partition(":")
+        if name.strip() == iface:
+            f = rest.split()
+            try:
+                level = float(f[2])
+                return "WAN %s %d dBm" % (iface, round(level if level < 0 else level - 256))
+            except (IndexError, ValueError):
+                return "WAN %s" % iface
+    return "WAN %s" % iface
+
+
+def mesh_summary(cfg):
+    """'mesh 2 nodes, slowest 7.1 Mbit/s' from the dashboard's mesh summary file (Ops writes it; no file, no summary)."""
+    path = os.path.expanduser(cfg.get("MESH_STATUS_FILE", "~/mesh_status.json").strip() or "off")
+    if path == "off":
+        return ""
+    try:
+        with open(path) as f:
+            m = json.load(f)
+        if time.time() - float(m.get("now", 0)) > 120 or int(m.get("nodes_total", 0)) < 1:
+            return ""
+        up, total = int(m.get("nodes_up", 0)), int(m["nodes_total"])
+        out = "mesh %d node%s" % (total, "" if total == 1 else "s") if up == total else "mesh %d of %d nodes" % (up, total)
+        if m.get("slowest_mbps") is not None:
+            out += ", slowest %.1f Mbit/s" % float(m["slowest_mbps"])
+        return out
+    except (OSError, ValueError, TypeError, KeyError):
+        return ""
+
+
+def deck_status(cfg):
+    """One line of deck health for <remarks>, or '' when DECK_STATUS = off."""
+    if cfg.get("DECK_STATUS", "on").strip().lower() in ("0", "off", "no", "false"):
+        return ""
+    parts = []
+    try:
+        parts.append("CPU %.0fC" % (int(_read(THERMAL).strip()) / 1000.0))
+    except ValueError:
+        pass
+    wan = wan_status(MeshAddr.iface)
+    if wan:
+        parts.append(wan)
+    parts.append(mesh_summary(cfg) or ("mesh OK" if Stats.mesh_ready else "mesh not joined (server-only)"))
+    try:
+        up = int(float(_read(PROC_UPTIME).split()[0]))
+        parts.append("up %dh%02dm" % (up // 3600, up % 3600 // 60))
+    except (IndexError, ValueError):
+        pass
+    parts.append("TAK MESH TOC %s" % suite_version())
+    return " | ".join(parts)
+
+
+def bridge_identity(cfg, now=None, pos=None, live=False, status=""):
     """The bridge's own CoT: tells OpenTAKServer who this connection is (see IDENTIFY above).
     With a GPS position (GPS = gpsd) DECK shows on server phones' maps: live while the fix is fresh,
     sent already stale at the last known spot when the fix is lost (phones grey it out)."""
@@ -985,10 +1096,11 @@ def bridge_identity(cfg, now=None, pos=None, live=False):
     xml = ('<event version="2.0" uid=%s type=%s how=%s time=%s start=%s stale=%s>'
            '<point lat="%s" lon="%s" hae="%s" ce="%s" le="9999999.0"/>'
            '<detail><contact callsign=%s endpoint="*:-1:stcp"/>%s'
-           '<takv device="deck" platform="TAK MESH TOC" os="Linux" version="2"/>'
+           '<takv device="deck" platform="TAK MESH TOC" os="Linux" version="2"/>%s'
            '</detail></event>') % (
         quoteattr(uid), quoteattr(etype), quoteattr(how), quoteattr(_ts(now * 1000)), quoteattr(_ts(now * 1000)),
-        quoteattr(_ts(stale * 1000)), lat, lon, hae, ce, quoteattr(callsign), team_xml(cfg.get("BRIDGE_TEAM", ""), cfg.get("BRIDGE_ROLE", "")))
+        quoteattr(_ts(stale * 1000)), lat, lon, hae, ce, quoteattr(callsign), team_xml(cfg.get("BRIDGE_TEAM", ""), cfg.get("BRIDGE_ROLE", "")),
+        "<remarks>%s</remarks>" % xml_escape(status) if status else "")
     return xml.encode()
 
 
@@ -1254,7 +1366,7 @@ class Identity:
                 live, pos = self.gps.position() if self.gps else (False, None)
                 due = time.monotonic() - last_sent >= self.interval
                 if live or due or (was_live and not live):
-                    await self.tx_queue.put(bridge_identity(self.cfg, pos=pos, live=live))
+                    await self.tx_queue.put(bridge_identity(self.cfg, pos=pos, live=live, status=deck_status(self.cfg)))
                     last_sent = time.monotonic()
                     if self.gps and live != was_live and (live or was_live):   # no "lost" line at startup
                         log.info("GPS %s: DECK %s on server maps", "fix" if live else "fix lost",
@@ -1289,6 +1401,8 @@ class MeshToServer:
         told = False
         while True:
             try:
+                if MeshAddr.missing:
+                    raise OSError("%s has no address yet" % MeshAddr.iface)
                 reader, _ = await pytak.create_udp_client(url, local, ttl, local_addrs)
                 if reader is None:
                     raise OSError("could not open mesh reader for %s" % url.geturl())
@@ -1861,6 +1975,7 @@ async def main(path):
         log.warning("Config: %s", note)
     cfg = parser["bridge"]
     log.info("TAK MESH TOC %s, bridge starting (config %s)", suite_version(), path)
+    MeshAddr.setup(parser, cfg)
     pytak_version_guard(cfg)
     expand_tls_paths(cfg)
     protect_tls_percent(cfg)

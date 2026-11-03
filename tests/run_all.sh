@@ -4,7 +4,8 @@
 #   bash tests/run_all.sh            (as a normal user; ~15 minutes)
 # Needs: python3 3.9+; for ui_test, dash_*_test: playwright + Chromium; for boot_test: root (network namespaces),
 # otherwise it is skipped; for dm_relay_e2e, dm_route_e2e: a local RabbitMQ (rabbitmq-server) and pika, otherwise
-# they are skipped. The bridge always runs the way the service runs it: python3 -S with the bundled vendor/ libraries.
+# they are skipped; for meshwatch_test's real-alfred part: root and an alfred binary (ALFRED_BIN=...), otherwise
+# that part is skipped. The bridge always runs the way the service runs it: python3 -S with the bundled vendor/ libraries.
 # Tests that load the bridge's code directly run with python3 -S too (clean), so they never pick up other copies of
 # PyTAK, takproto or protobuf installed on this computer.
 cd "$(dirname "$0")"
@@ -25,6 +26,9 @@ run suite_test.py /tmp/mmb_suite_test
 run outbox_test.py
 clean dm_filter_test.py
 clean itak_udp_dm_test.py
+clean meshaddr_test.py
+clean deck_status_test.py
+clean meshwatch_test.py
 clean ident_check.py
 clean durability_test.py
 clean pytak_patch_test.py

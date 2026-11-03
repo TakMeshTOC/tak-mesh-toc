@@ -46,12 +46,13 @@
 
   /* ---------------- tabs ---------------- */
   function showTab(name, save) {
-    if (['video', 'trends'].indexOf(name) < 0) name = 'video';
+    if (name === 'trends') name = 'mesh';                   /* the MESH tab replaced TRENDS in 3.1.8 */
+    if (['video', 'mesh'].indexOf(name) < 0) name = 'video';
     activeTab = name;
     Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false'); });
-    ['video', 'trends'].forEach(function (t) { $('tab-' + t).hidden = t !== name; });
+    ['video', 'mesh'].forEach(function (t) { $('tab-' + t).hidden = t !== name; });
     if (save) store('tab', name);
-    if (name === 'trends') setTimeout(drawCharts, 30);
+    if (name === 'mesh') { if (data) meshTab(data); setTimeout(drawCharts, 30); }
     if (name === 'video') renderCenterState();
     renderCenterState();
   }
@@ -166,11 +167,9 @@
     $('d-state').textContent = m.state || { ok: 'LINK OK', warn: 'CHECK LINK', bad: 'NODE LOST' }[m.tile];
     $('p-deck').className = 'panel grow lv-' + m.tile;
     var r = '', nodes = m.nodes || [];
+    $('d-bluf').innerHTML = bluf(m);
+    $('d-bluf').hidden = !nodes.length;
     if (!nodes.length) r += row('mesh nodes', 'none set or found (NODE_IP in deck.ini)', 'lv-warn');
-    else if (!m.node_ok) r += row(nodes.length > 1 ? 'nodes' : nodeLabel(nodes[0]), m.traffic ? 'none answer ping' : 'NONE ANSWERING', m.traffic ? 'lv-warn' : 'lv-bad');
-    else nodes.forEach(function (n) {
-      r += row(nodeLabel(n) + (n.nearest && nodes.length > 1 ? ' (nearest)' : ''), n.ok ? '<b>answers</b>, ' + n.rtt_ms + ' ms' : 'not answering', n.ok ? '' : 'lv-warn');
-    });
     if ('traffic_age' in m) r += row('mesh traffic', m.traffic_age == null ? 'none yet' : age(m.traffic_age) + (m.traffic && !m.node_ok ? ', mesh is up' : ''),
       m.traffic ? '' : (m.tile === 'bad' ? 'lv-bad' : 'lv-warn'));
     if (m.loss_pct != null) r += row('loss / jitter', m.loss_pct + '% / ' + (m.jitter == null ? '-' : m.jitter + ' ms'), m.loss_pct > 10 ? 'lv-warn' : '');
@@ -179,11 +178,56 @@
     r += row('MTU', k.mtu == null ? '?' : k.mtu + (k.mtu_ok ? ' ok' : ' (expect ' + k.mtu_expected + ')'), k.mtu_ok ? '' : 'lv-warn');
     r += row('internet', k.internet ? 'ok' : 'none', k.internet ? '' : 'lv-warn');
     if (k.ntp_synced != null) r += row('clock', k.ntp_synced ? 'synced' : 'NOT synced', k.ntp_synced ? '' : 'lv-warn');
-    r += row('cpu temp', k.cpu_temp == null ? '-' : k.cpu_temp + ' C', k.cpu_temp != null && k.cpu_temp > 75 ? 'lv-warn' : '');
+    r += row('cpu temp', '<canvas class="rsp" id="cpu-sp"></canvas>' + (k.cpu_temp == null ? '-' : k.cpu_temp + ' C'), k.cpu_temp != null && k.cpu_temp > 75 ? 'lv-warn' : '');
     r += row('load / mem', k.load[0] + ' / ' + (k.mem_pct == null ? '-' : k.mem_pct + '%'));
     r += row('deck uptime', dur(k.uptime));
     if (k.throttled) r += row('power/thermal', 'flags ' + esc(k.throttled), 'lv-warn');
     $('d-rows').innerHTML = r;
+    if (hist && hist.spark) Charts.spark($('cpu-sp'), (hist.spark.temp || []).slice(-90), css('--plot'), {});
+  }
+  $('d-bluf').addEventListener('click', function (e) { if (e.target.closest && e.target.closest('button')) showTab('mesh', true); });
+
+  /* the one-glance mesh summary at the top of MESH + DECK */
+  function bluf(m) {
+    var nodes = m.nodes || [], up = nodes.filter(function (n) { return n.ok; }), lost = nodes.filter(function (n) { return !n.ok; });
+    var lvl = !up.length ? 'bad' : lost.length ? 'warn' : 'ok';
+    var big = !up.length ? (m.traffic ? 'NO NODE ANSWERS' : 'NODE LOST') : nodes.length === 1 ? '1 NODE \u00b7 OK' :
+      lost.length ? up.length + ' OF ' + nodes.length + ' NODES' : nodes.length + ' NODES \u00b7 ALL OK';
+    var near = up.filter(function (n) { return n.nearest; })[0], links = m.links || [], s = [];
+    var slow = null;
+    links.forEach(function (l) { if (l.mbps != null && (!slow || l.mbps < slow.mbps)) slow = l; });
+    if (slow) s.push('slowest link ' + slow.mbps + ' Mbit/s ' + slow.grade);
+    else if (nodes.length > 1) s.push('no radio links reported');
+    if (near) s.push(esc(nodeLabel(near)) + ' ' + near.rtt_ms + ' ms');
+    var h = '<div class="bluf lv-' + lvl + '"><button type="button">MESH TAB &rsaquo;</button><div class="big">' + big + '</div><div class="s">' + s.join(' \u00b7 ') + '</div>';
+    lost.forEach(function (n) { h += '<div class="lost">' + esc(nodeLabel(n)) + ' lost \u00b7 not answering</div>'; });
+    return h + '</div>';
+  }
+
+  /* ---------------- MESH tab ---------------- */
+  function pct(v) { return v == null ? '-' : Math.round(v) + '%'; }
+  function meshTab(d) {
+    if (activeTab !== 'mesh' || !d.mesh) return;
+    var m = d.mesh, nodes = m.nodes || [], links = m.links || [], disc = m.discovery || {};
+    $('mt-src').textContent = disc.source === 'alfred' ? (disc.ok ? "from the mesh's own list (alfred) \u00b7 " + nodes.length : 'mesh list unavailable: ' + (disc.why || '?'))
+                                                       : 'from NODE_IP in deck.ini \u00b7 ' + nodes.length;
+    var h = '<tr><th>NODE</th><th>IP</th><th>PING</th><th>CPU</th><th>LOAD</th><th>MEM</th><th>UP</th><th>STATUS</th></tr>';
+    nodes.forEach(function (n) {
+      var lv = n.ok ? 'ok' : 'warn', old = n.ok ? '' : ' class="dimc" title="last known"';
+      h += '<tr class="lv-' + lv + '"><td>' + esc(nodeLabel(n)) + (n.nearest && nodes.length > 1 ? '<span class="tag">NEAREST</span>' : '') + '</td><td>' + esc(n.ip) + '</td>' +
+        '<td>' + (n.ok ? n.rtt_ms + ' ms' : '-') + '</td><td' + old + '>' + (n.cpu_c == null ? '-' : Math.round(n.cpu_c) + 'C') + '</td>' +
+        '<td' + old + '>' + pct(n.load_pct) + '</td><td' + old + '>' + pct(n.mem_pct) + '</td><td' + old + '>' + (n.uptime == null ? '-' : dur(n.uptime)) + '</td>' +
+        '<td class="st">' + (n.ok ? 'OK' : 'LOST') + '</td></tr>';
+    });
+    $('mt-nodes').innerHTML = nodes.length ? h : '<tr><td class="dimc">no nodes found yet</td></tr>';
+    $('mt-grades').textContent = 'HaLow throughput \u00b7 GOOD \u2265' + m.link_good + ' \u00b7 OK ' + m.link_poor + '\u2013' + m.link_good + ' \u00b7 POOR <' + m.link_poor + ' Mbit/s';
+    var top = Math.max(10, m.link_good * 2);
+    $('mt-links').innerHTML = links.length ? links.map(function (l) {
+      var lv = { GOOD: 'ok', OK: 'warn', POOR: 'bad' }[l.grade] || 'info';
+      var w = l.mbps == null ? 0 : Math.min(100, Math.round(100 * l.mbps / top));
+      return '<div class="lk lv-' + lv + '"><span>' + esc(l.a) + ' \u2194 ' + esc(l.b) + '</span><span class="bar"><i style="width:' + w + '%"></i></span><span class="num">' +
+        (l.mbps == null ? 'speed not reported' : l.mbps + ' Mbit/s ' + l.grade) + '</span></div>';
+    }).join('') : '<div class="none">' + (nodes.length > 1 ? 'no radio links reported yet' : 'one node: no radio links to show') + '</div>';
   }
 
   /* a node found on the port (not named in deck.ini) is shown by the end of its address, e.g. .254.20 */
@@ -321,7 +365,7 @@
     if (!data) return;
     var t = '';
     if (activeTab === 'video') { var l = (data.video.paths || []).filter(function (p) { return p.ready; }).length; t = !data.video.running ? 'MEDIAMTX OFF' : l + ' LIVE'; }
-    else t = hist ? 'LIVE' : '';
+    else { var mm = data.mesh || {}; t = (mm.nodes_total || 0) + ' NODES \u00b7 ' + (mm.links || []).length + ((mm.links || []).length === 1 ? ' LINK' : ' LINKS'); }
     $('c-state').textContent = t;
   }
   $('b-play').addEventListener('click', function () { play(); });
@@ -389,20 +433,30 @@
   /* ---------------- trends ---------------- */
   var stripState = null;
   function drawCharts() {
-    if (!hist || activeTab !== 'trends') return;
+    if (!hist || activeTab !== 'mesh') return;
     var sp = hist.spark, col = css('--plot');
     var ping = (hist.ping || []);
     var info = Charts.line($('g-ping'), { points: ping, color: col, windowSec: 900, ymin: 0 });
     var m = data && data.mesh;
     $('g-ping-t').textContent = 'PING // ' + (m && m.node_ok ? nodeLabel((m.nodes || []).filter(function (n) { return n.nearest; })[0] || { name: m.node_name }).toUpperCase() : 'NODE') + ', 15 MIN';
     $('g-ping-s').innerHTML = m && m.samples ? ('avg <b>' + (m.rtt_avg == null ? '-' : m.rtt_avg) + '</b> max <b>' + (m.rtt_max == null ? '-' : m.rtt_max) + '</b> jitter <b>' + (m.jitter == null ? '-' : m.jitter) + '</b> loss <b>' + m.loss_pct + '%</b>') : '';
-    function pts(arr) { return (arr || []).map(function (v, i) { return [sp.t0 + i * sp.step, v]; }); }
-    Charts.line($('g-msgs'), { points: pts(sp.msgs), color: col, ymin: 0, lossTicks: false });
-    Charts.line($('g-temp'), { points: pts(sp.temp), color: col, ymin: 30, ymax: 90, lossTicks: false });
-    var lastN = function (a) { for (var i = (a || []).length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return '-'; };
-    $('g-msgs-s').innerHTML = 'now <b>' + lastN(sp.msgs) + '</b>';
-    $('g-temp-s').innerHTML = 'now <b>' + lastN(sp.temp) + '</b>';
+    linkGraph(m);
     stripState = Charts.strip($('strip'), hist.strip);
+  }
+  var LINK_COLORS = ['--plot', '#b48ee0', '#7fd6d6', '#e07fb4', '#c9d3dd'];   /* not green/amber/red: those mean grades */
+  function linkGraph(m) {
+    var L = hist.links || [], keys = [];
+    L.forEach(function (s) { Object.keys(s[1]).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); });
+    var series = keys.map(function (k, i) {
+      var c = LINK_COLORS[i % LINK_COLORS.length];
+      return { name: k, color: c.charAt(0) === '-' ? css(c) : c,
+               points: L.map(function (s) { return [s[0], s[1][k] == null ? null : s[1][k]]; }) };
+    });
+    var good = m ? m.link_good : 3, poor = m ? m.link_poor : 1;
+    Charts.line($('g-link'), { series: series, ymin: 0, windowSec: 3600, now: hist.now,
+                              hlines: [{ v: good, color: css('--amber') }, { v: poor, color: css('--red') }] });
+    $('g-link-s').innerHTML = series.length ? series.map(function (s) { return '<b style="color:' + s.color + '">' + esc(s.name.replace('|', ' \u2194 ')) + '</b>'; }).join(' \u00b7 ') +
+      ' \u00b7 dashed: OK ' + good + ', POOR ' + poor : 'no link data yet';
   }
   function stripInfo(e) {
     var cv = $('strip'), r = cv.getBoundingClientRect();
@@ -516,7 +570,7 @@
     $('mock').style.display = d.mock ? 'inline' : 'none';
     ['bridge', 'server', 'video', 'mesh'].forEach(function (k) { tile(k, d.tiles[k]); });
     gpsTile(d.gps);
-    banner(d); bridgePanel(d); serverPanel(d); deckPanel(d); videoPanel(d); logPanel(d);
+    banner(d); bridgePanel(d); serverPanel(d); deckPanel(d); meshTab(d); videoPanel(d); logPanel(d);
     sparks();
     setupBadge(d);
     if ($('tools').className === 'on') renderSetup();

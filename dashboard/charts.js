@@ -66,14 +66,18 @@
   };
 
   /* ---- labelled line graph ----
-     opts: { points:[[t, v|null],...], color, ymin, unit, lossColor, windowSec, now } */
+     opts: { points:[[t, v|null],...], color, ymin, unit, lossColor, windowSec, now }
+     or several lines: { series:[{points, color}], hlines:[{v, color}] } (hlines: dashed thresholds) */
   Charts.line = function (canvas, opts) {
     var p = prep(canvas); if (!p) return null;
     var ctx = p.ctx, w = p.w, h = p.h;
     var left = 34, right = 4, top = 6, bottom = 14;
-    var pts = opts.points || [], color = opts.color || css('--plot', '#3f7');
+    var series = opts.series || [{ points: opts.points || [], color: opts.color }];
+    var pts = [].concat.apply([], series.map(function (s) { return s.points || []; }));
+    var color = opts.color || css('--plot', '#3f7');
     var line = css('--line', '#143'), dim = css('--dim', '#284'), red = css('--red', '#f44');
     var vals = pts.map(function (q) { return q[1]; }).filter(function (v) { return v != null; });
+    (opts.hlines || []).forEach(function (l) { vals.push(l.v); });
     var ymin = opts.ymin != null ? opts.ymin : 0;
     var ymax = opts.ymax != null ? opts.ymax : nice(Math.max.apply(null, vals.concat([1])) * 1.1);
     ctx.font = '10px ' + css('--mono', 'monospace');
@@ -85,24 +89,33 @@
       ctx.fillStyle = dim; ctx.textAlign = 'right'; ctx.fillText(fmtNum(val), left - 4, yy);
     }
     if (!pts.length) { ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('collecting data...', (left + w) / 2, h / 2); return null; }
-    var t0 = pts[0][0], t1 = opts.now || pts[pts.length - 1][0];
+    var t0 = Math.min.apply(null, pts.map(function (q) { return q[0]; }));
+    var t1 = opts.now || Math.max.apply(null, pts.map(function (q) { return q[0]; }));
     if (opts.windowSec) t0 = Math.max(t0, t1 - opts.windowSec);
     var span = Math.max(1, t1 - t0);
     function X(t) { return left + (w - left - right) * (t - t0) / span; }
     function Y(v) { return top + (h - top - bottom) * (1 - (Math.min(v, ymax) - ymin) / (ymax - ymin)); }
-    // line with gaps
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
-    var open = false;
-    ctx.beginPath();
-    pts.forEach(function (q) {
-      if (q[0] < t0) return;
-      if (q[1] == null) { open = false; return; }
-      if (!open) { ctx.moveTo(X(q[0]), Y(q[1])); open = true; } else ctx.lineTo(X(q[0]), Y(q[1]));
+    // thresholds as dashed lines
+    (opts.hlines || []).forEach(function (l) {
+      var y = Math.round(Y(l.v)) + .5;
+      ctx.strokeStyle = l.color; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke(); ctx.setLineDash([]);
     });
-    ctx.stroke();
-    // lost samples as red ticks on the baseline
+    // lines with gaps
+    series.forEach(function (s) {
+      ctx.strokeStyle = s.color || color; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+      var open = false;
+      ctx.beginPath();
+      (s.points || []).forEach(function (q) {
+        if (q[0] < t0) return;
+        if (q[1] == null) { open = false; return; }
+        if (!open) { ctx.moveTo(X(q[0]), Y(q[1])); open = true; } else ctx.lineTo(X(q[0]), Y(q[1]));
+      });
+      ctx.stroke();
+    });
+    // lost samples as red ticks on the baseline (single line only)
     ctx.strokeStyle = red; ctx.lineWidth = 2;
-    pts.forEach(function (q) {
+    if (!opts.series) pts.forEach(function (q) {
       if (q[0] >= t0 && q[1] == null && opts.lossTicks !== false) { var x = X(q[0]); ctx.beginPath(); ctx.moveTo(x, h - bottom - 1); ctx.lineTo(x, h - bottom - 9); ctx.stroke(); }
     });
     // x labels

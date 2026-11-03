@@ -203,8 +203,11 @@ else:
         sb = pg2.evaluate("(() => { const b = document.getElementById('h-tools'); return [b.className, getComputedStyle(b).color]; })()")
         check("dashboard: SETUP turns amber/red when setup has problems", ("lv-warn" in sb[0] and sb[1] == "rgb(227, 163, 59)") or ("lv-bad" in sb[0] and sb[1] == "rgb(240, 106, 99)"), sb)
         ctx2.close()
-        pg.click("button[data-tab=trends]"); pg.wait_for_timeout(1200)
-        check("dashboard: trends draw without errors", not errs, errs)
+        pg.click("button[data-tab=mesh]"); pg.wait_for_timeout(1500)
+        check("dashboard: MESH tab draws without errors", not errs, errs)
+        mt = pg.evaluate("""() => ({ rows: document.querySelectorAll('#mt-nodes tr').length, links: document.querySelectorAll('#mt-links .lk').length,
+            tabs: [...document.querySelectorAll('.tabs button')].map(b => b.textContent) })""")
+        check("dashboard: MESH tab lists nodes and radio links; TRENDS is gone", mt["rows"] >= 3 and mt["links"] >= 1 and mt["tabs"] == ["VIDEO", "MESH"], mt)
         pg.screenshot(path=W + "/dashboard.png"); ctx.close()
         ctx, pg, errs = page("http://127.0.0.1:%d/" % dport, 390, 844)
         check("dashboard: no sideways scrolling at phone width", pg.evaluate("document.documentElement.scrollWidth") <= 390 and not errs, errs)

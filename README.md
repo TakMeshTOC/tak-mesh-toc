@@ -23,7 +23,7 @@ It is four programs that run as services on the deck:
 |---|---|---|---|
 | **Bridge** | Mesh ↔ server: positions, chat, markers and drawings; private DMs both ways; the deck's own identity and GPS position | `manet-bridge` | none |
 | **Chat** (TAK MESH TOC Chat) | ATAK chat on the deck's own screen, mesh and server, including DMs | `manet-chat` | http://127.0.0.1:8090 |
-| **Ops** (TAK MESH TOC Ops) | Status dashboard: server link, mesh link, traffic, video, GPS, voice, and alerts | `manet-dashboard` | http://127.0.0.1:8080 |
+| **Ops** (TAK MESH TOC Ops) | Status dashboard: server link, mesh nodes and radio links, traffic, video, GPS, voice, and alerts | `manet-dashboard` | http://127.0.0.1:8080 |
 | **Voice** (optional, off by default) | OpenMANET push-to-talk talk groups ↔ Mumble channels on your server | `manet-voice` | Chat's **VOICE** page, http://127.0.0.1:8090/voice |
 
 ## What you need
@@ -42,6 +42,9 @@ unzip TAK_MESH_TOC.zip && cd TAK_MESH_TOC
 bash install.sh --dry-run          # shows every step, changes nothing
 bash install.sh --icon             # --icon: desktop icons; --kiosk: the Ops dashboard full-screen at login
 ```
+Ops and Chat are always in the main menu. `--icon` also puts them on the desktop; delete those and later updates
+leave them deleted. If the desktop asks "Execute?" every time you open one, use the menu (or add them to the
+taskbar's launcher) instead.
 ### Setup: the wizard (recommended)
 Open **http://127.0.0.1:8080** in the deck's browser (or click the TAK MESH TOC Ops icon). On a new deck Ops opens
 **TAK MESH TOC // SETUP**, seven steps:
@@ -60,7 +63,8 @@ Setup opens only on the deck's own screen. Run it again any time: Ops › SETUP 
 ### Setup by hand
 Or open `~/manet_mesh_bridge/deck.ini` and set the two things only you know:
 1. **Your server:** `COT_URL` in `[bridge]`, plus the certificate lines (see Certificates).
-2. **The deck's mesh address:** `MESH_ADDR` in `[deck]`, only if the installer couldn't find it on `eth0`.
+2. **The deck's mesh address:** nothing to do. `MESH_ADDR = auto` in `[deck]` uses whatever address `eth0` has and
+   follows it (3.1.7 or newer). To pin one instead, set the IP there and give the deck a static lease on the node.
 
 Then:
 ```
@@ -233,12 +237,23 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ## How it behaves
 - **No mesh node plugged in?** The deck runs server-only: Chat talks to the server, and the deck shows on server
   maps. It switches to mesh + server by itself when a node is plugged in.
-- **Several mesh nodes, or moving the cable between them?** Ops pings every node listed in `NODE_IP`
-  (`NODE_IP = 10.41.254.10, 10.41.254.20`, with `NODE_NAME = node 1, node 2`), or, when it is blank, the nodes it
-  finds on the mesh port (the ones with a settings web page). The mesh link is OK when any of them answers, and a node
-  that drops off shows as "not answering" without turning anything red. If no node answers a ping but mesh traffic
-  is still arriving, the tile stays LINK OK (amber) and the bridge keeps RELAYING: NODE LOST means no pings and no
-  traffic.
+- **The node rebooted and gave the deck a new address?** With `MESH_ADDR = auto` the bridge and Voice notice within
+  a few seconds and restart on the new address. With a fixed `MESH_ADDR`, the deck stops reaching the mesh until it
+  gets that address back, so give it a static lease on the node (an OpenWrt node forgets its leases when it reboots).
+- **Several mesh nodes?** Ops lists every node the mesh itself knows about (OpenMANET shares this list between its
+  nodes; Ops reads it with no login), so a node you add shows up by itself. The **MESH** tab shows each node's ping,
+  CPU temperature, load, memory and uptime, the speed of every radio link (GOOD 3 Mbit/s and up, OK 1-3, POOR below 1;
+  change with `LINK_GOOD_MBPS` / `LINK_POOR_MBPS`), link speed over the last hour, and the 24-hour history. The
+  MESH + DECK panel shows the one-line summary. A node joining, a node lost and a link turning POOR each go in the
+  event log once. Name nodes yourself with `NODE_IP = 10.41.0.1, 10.41.254.10` and `NODE_NAME = node 1, node 2`
+  (your names win). The installer gives the mesh port the IPv6 address the node list needs; `meshtoc check` says
+  if it's missing.
+- **A node drops off?** The tile turns amber (`1 OF 2 NODES`) while any node still answers. If no node answers a ping
+  but mesh traffic is still arriving, the tile stays LINK OK (amber) and the bridge keeps RELAYING: NODE LOST means
+  no pings and no traffic.
+- **Server users tap DECK on the map** to see the deck's health in its remarks: CPU temperature, internet link and
+  Wi-Fi signal, mesh nodes and the slowest radio link, uptime and version (`DECK_STATUS = off` in `[bridge]` leaves
+  it out).
 - **Server link drops?** The bridge notices within about a minute, even if the connection never closed, and
   reconnects. Chats and DMs on their way to the server are kept on disk and sent when the link is back.
 - **Busy or slow link?** Chats, markers and DMs always go first. Position reports send only the newest one per phone,
@@ -278,6 +293,7 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ~/manet_mesh_bridge/previous                 the version before (for rollback)
 ~/bridge_status.json  ~/bridge_outbox.jsonl  ~/deck_chat_log.jsonl  ~/dashboard_events.jsonl  ~/dashboard_history.jsonl
 ~/voice_status.json  ~/voice_bridges.json   voice: who is talking, which talk groups are switched on (nothing is recorded)
+~/mesh_status.json                           Ops' mesh summary for the DECK status line
 ```
 
 ## Upgrade, roll back, remove
@@ -288,7 +304,7 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
   are always kept.
 
 ## Tests
-`bash tests/run_all.sh` runs every test suite (about 570 checks) on a Linux PC or VM, not on a live deck.
+`bash tests/run_all.sh` runs every test suite (about 800 checks) on a Linux PC or VM, not on a live deck.
 - **What runs:** the real programs, against stand-ins for the phones, the mesh and the server, including a copy of
   OpenTAKServer's own stream reader. Voice runs against a real Mumble server. The suite also has fuzzing, a
   network-namespace cable test, browser tests of every page, and an install/upgrade/rollback simulation with no

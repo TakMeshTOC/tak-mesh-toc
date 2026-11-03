@@ -8,6 +8,7 @@ import math as _math
 import os as _os
 import re as _re
 import socket as _socket
+import struct as _struct
 import threading as _threading
 import time as _time
 from xml.sax.saxutils import quoteattr as _quoteattr
@@ -67,8 +68,8 @@ def apply_deck(cp, section, program, defaults=None):
         if not target or src is None:
             continue
         val = cp.get("deck", src, raw=True).strip()
-        if dkey == "MESH_ADDR" and program == "bridge" and val.lower() in ("", "auto"):
-            continue                      # the bridge needs the real address: keep [bridge]'s own
+        if dkey == "MESH_ADDR" and program == "bridge" and val == "":
+            continue                      # blank [deck] MESH_ADDR: keep [bridge]'s own (auto reaches the bridge too)
         own = _find(cp, section, target)
         if own is not None:
             old = cp.get(section, own, raw=True).strip()
@@ -77,6 +78,51 @@ def apply_deck(cp, section, program, defaults=None):
             cp.remove_option(section, own)
         cp.set(section, target, val)
     return notes
+
+
+# ---- the deck's address on the mesh -----------------------------------------------------------
+# MESH_ADDR = auto: use whatever address the mesh port (MESH_IFACE, usually eth0) has right now, and follow it when
+# the node hands out a new one (a node reboot can do that). The bridge and Voice resolve it at start and restart
+# themselves when it changes; Chat looks it up live.
+def iface_ipv4(iface):
+    """IPv4 address of a network interface, or None (down, unplugged or no address). No external tools."""
+    import fcntl
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        res = fcntl.ioctl(s.fileno(), 0x8915, _struct.pack("256s", iface[:15].encode()))   # SIOCGIFADDR
+        return _socket.inet_ntoa(res[20:24])
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def mesh_iface(cp, section):
+    """The mesh port's name: MESH_IFACE in `section`, else [deck], [chat] or [dashboard], else eth0."""
+    for sec in (section, "deck", "chat", "dashboard"):
+        o = _find(cp, sec, "MESH_IFACE")
+        if o is not None and cp.get(sec, o, raw=True).strip():
+            return cp.get(sec, o, raw=True).strip()
+    return "eth0"
+
+
+def is_auto(value):
+    return (value or "").strip().lower() == "auto"
+
+
+def watch_mesh_addr(iface, current, on_change, every=5.0):
+    """Background thread: call on_change(old, new) once when `iface` has an address different from `current`
+    (None = it had none). An address that goes away (node unplugged) is not a change: the old one may come back."""
+    def loop():
+        while True:
+            _time.sleep(every)
+            now = iface_ipv4(iface)
+            if now and now != current:
+                on_change(current, now)
+                return
+    t = _threading.Thread(target=loop, name="mesh-addr-watch", daemon=True)
+    t.start()
+    return t
 
 
 # ---- page look -----------------------------------------------------------------------------------

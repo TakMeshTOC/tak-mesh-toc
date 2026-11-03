@@ -133,7 +133,7 @@ check("deck.ini: server and the certificate lines switched on, as full paths (Py
 check("deck.ini: name check off (the address isn't in the server's certificate)", cp.get("bridge", "PYTAK_TLS_DONT_CHECK_HOSTNAME") == "1")
 check("deck.ini: callsign, team, role in [deck]", (cp.get("deck", "CALLSIGN"), cp.get("deck", "TEAM"), cp.get("deck", "ROLE")) == ("DECK2", "Blue", "Team Lead"))
 check("deck.ini: Ops on this deck only", cp.get("dashboard", "LISTEN") == "127.0.0.1")
-check("deck.ini: no mesh port chosen -> MESH_ADDR left as it was", cp.get("deck", "MESH_ADDR") == "10.41.0.50")
+check("deck.ini: no mesh port chosen -> MESH_ADDR left as it was (auto)", cp.get("deck", "MESH_ADDR") == "auto")
 lost = [l for l in before.splitlines() if l.startswith("#") and l not in after.splitlines()
         and not any(k in l for k in ("PYTAK_TLS_CLIENT_CERT", "PYTAK_TLS_CLIENT_KEY", "PYTAK_TLS_CLIENT_CAFILE", "PYTAK_TLS_DONT_CHECK_HOSTNAME"))]
 check("deck.ini: every other comment line kept", not lost, lost[:3])

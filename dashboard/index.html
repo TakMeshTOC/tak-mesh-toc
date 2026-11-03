@@ -137,6 +137,28 @@ h1 small { color: var(--dim); letter-spacing: .03em; font-size: .7em; margin-lef
 .graph.small { height: 54px; }
 .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 #strip { width: 100%; height: 66px; display: block; }
+/* MESH tab and the MESH + DECK summary */
+.ntab-wrap { overflow-x: auto; scrollbar-width: thin; }
+.ntab { width: 100%; border-collapse: collapse; font-size: .86em; font-family: var(--mono); }
+.ntab th { text-align: left; font: 600 .82em var(--cond); letter-spacing: .14em; color: var(--dim); padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ntab td { padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ntab td:first-child { border-left: 3px solid var(--c); font: 700 1.12em var(--cond); letter-spacing: .06em; color: var(--g); }
+.ntab td.st { color: var(--c); }
+.ntab .tag { font: 500 .62em var(--mono); color: var(--acc); border: 1px solid var(--line2); padding: 0 4px; margin-left: 6px; letter-spacing: 0; vertical-align: .15em; }
+.ntab .dimc { color: var(--dim); }
+.links { display: flex; flex-direction: column; gap: 5px; font-size: .9em; }
+.links .lk { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(40px, 1fr) auto; gap: 10px; align-items: center; }
+.links .lk > span:first-child { color: #c9d3dd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.links .bar { height: 7px; background: var(--line2); position: relative; }
+.links .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--c); }
+.links .num { color: var(--c); font-family: var(--mono); text-align: right; white-space: nowrap; }
+.links .none { color: var(--dim); }
+.bluf { padding: 7px 10px; background: #0f151c; border-left: 3px solid var(--c); }
+.bluf .big { font: 700 1.3em var(--cond); letter-spacing: .06em; color: var(--c); line-height: 1.15; }
+.bluf .s { color: var(--dim); font-family: var(--mono); font-size: .8em; margin-top: 2px; overflow-wrap: anywhere; }
+.bluf .lost { color: var(--amber); font-family: var(--mono); font-size: .8em; margin-top: 3px; }
+.bluf button { float: right; background: transparent; border: 0; color: var(--acc); cursor: pointer; font: 600 .78em var(--cond); letter-spacing: .14em; padding: 2px 0 2px 8px; }
+canvas.rsp { width: 64px; height: 14px; vertical-align: middle; margin-right: 8px; }
 .legend { display: flex; gap: 12px; font-size: .75em; color: var(--dim); flex-wrap: wrap; }
 .legend i { display: inline-block; width: .8em; height: .8em; margin-right: .35em; vertical-align: -.1em; }
 #log { flex: 0 0 auto; height: 9.5em; margin: 0 18px; }
@@ -234,10 +256,10 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
   </div>
 
   <div class="col">
-    <section class="panel grow" id="p-center" aria-label="Video and trends">
+    <section class="panel grow" id="p-center" aria-label="Video and mesh">
       <div class="tabs" role="tablist">
         <button type="button" role="tab" data-tab="video" aria-selected="true">VIDEO</button>
-        <button type="button" role="tab" data-tab="trends" aria-selected="false">TRENDS</button>
+        <button type="button" role="tab" data-tab="mesh" aria-selected="false">MESH</button>
         <span class="sp"></span><span class="tstate" id="c-state"></span>
       </div>
 
@@ -258,15 +280,23 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
         <div class="files" id="v-files" hidden></div>
       </div>
 
-      <div class="tabpane" id="tab-trends" role="tabpanel" hidden>
+      <div class="tabpane" id="tab-mesh" role="tabpanel" hidden>
         <div class="trends">
           <div>
-            <div class="gh wrap"><span id="g-ping-t">PING // NODE</span><span id="g-ping-s"></span></div>
-            <canvas class="graph" id="g-ping"></canvas>
+            <div class="gh wrap"><span>NODES</span><span id="mt-src"></span></div>
+            <div class="ntab-wrap"><table class="ntab" id="mt-nodes"></table></div>
           </div>
-          <div class="twocol">
-            <div><div class="gh"><span>MSG/MIN 1H</span><span id="g-msgs-s"></span></div><canvas class="graph small" id="g-msgs"></canvas></div>
-            <div><div class="gh"><span>CPU C 1H</span><span id="g-temp-s"></span></div><canvas class="graph small" id="g-temp"></canvas></div>
+          <div>
+            <div class="gh wrap"><span>RADIO LINKS</span><span id="mt-grades"></span></div>
+            <div class="links" id="mt-links"></div>
+          </div>
+          <div>
+            <div class="gh wrap"><span>LINK SPEED // 1 H</span><span id="g-link-s"></span></div>
+            <canvas class="graph" id="g-link"></canvas>
+          </div>
+          <div>
+            <div class="gh wrap"><span id="g-ping-t">PING // NODE</span><span id="g-ping-s"></span></div>
+            <canvas class="graph small" id="g-ping"></canvas>
           </div>
           <div>
             <div class="gh"><span>LAST 24 HOURS</span><span id="g-strip-s">touch a column for details</span></div>
@@ -285,6 +315,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     </section>
     <section class="panel grow" id="p-deck" aria-label="Mesh and deck">
       <h2><span>MESH + DECK</span><span id="d-state"></span></h2>
+      <div id="d-bluf" hidden></div>
       <dl class="rows" id="d-rows"></dl>
     </section>
   </div>

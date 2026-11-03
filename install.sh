@@ -119,7 +119,7 @@ if [ -f "$BASE/deck.ini" ]; then
   note "keeping your existing deck.ini"
   [ -n "$CALLSIGN" ] && note "(--callsign ignored because deck.ini exists; set CALLSIGN in [deck])"
 elif [ "$DRY" = 1 ]; then
-  note "[dry-run] would write deck.ini from the example (CALLSIGN=${CALLSIGN:-DECK}, MESH_ADDR=${MESHIP:-not found on $MESHIF})"
+  note "[dry-run] would write deck.ini from the example (CALLSIGN=${CALLSIGN:-DECK}, MESH_ADDR=auto, now ${MESHIP:-none} on $MESHIF)"
 else
   mkdir -p "$BASE"
   "$PY" - "$SRC/config/deck.ini.example" "$BASE/deck.ini" "${CALLSIGN:-DECK}" "${MESHIP:-}" <<'PY'
@@ -127,11 +127,9 @@ import os, re, sys
 src, dst, cs, ip = sys.argv[1:5]
 s = open(src).read()
 s = re.sub(r"^CALLSIGN = .*$", "CALLSIGN = " + cs, s, count=1, flags=re.M)
-if ip:
-    s = re.sub(r"^MESH_ADDR = .*$", "MESH_ADDR = " + ip, s, count=1, flags=re.M)
 fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 os.write(fd, s.encode()); os.close(fd)
-print("   wrote %s (callsign %s, mesh address %s)" % (dst, cs, ip or "NOT FOUND: set MESH_ADDR in [deck]"))
+print("   wrote %s (callsign %s, mesh address auto: %s)" % (dst, cs, ("now " + ip) if ip else "none yet, plug in the node"))
 PY
   note "NEXT: open $BASE/deck.ini and set COT_URL (your TAK server) and the certificate lines in [bridge]"
 fi
@@ -197,6 +195,20 @@ if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q '^St
   if $SUDO ufw status 2>/dev/null | grep -q '38801:38810/udp on '"$MESHIF"; then note "voice: UFW already allows the talk group ports on $MESHIF"
   else act $SUDO ufw allow in on "$MESHIF" proto udp to any port 38801:38810 comment "MANET_MESH_BRIDGE voice (OpenMANET talk groups)"; fi
 fi
+# Ops lists the mesh's nodes from OpenMANET's own gossip (alfred), which only answers an EUI-64 IPv6 link-local address.
+# Most decks use NetworkManager's "stable-privacy" kind, so switch the mesh port's connection to eui64 (once).
+if command -v nmcli >/dev/null 2>&1; then
+  MCONN="$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | awk -F: -v d="$MESHIF" '$2==d{print $1; exit}')"
+  if [ -z "$MCONN" ]; then note "mesh: no active NetworkManager connection on $MESHIF; Ops lists only the nodes in NODE_IP until it has one"
+  elif [ "$(nmcli -g ipv6.addr-gen-mode connection show "$MCONN" 2>/dev/null)" = "eui64" ]; then note "mesh: $MESHIF already has the IPv6 address the node list needs"
+  elif nmcli -g ipv6.method connection show "$MCONN" 2>/dev/null | grep -qE '^(disabled|ignore)$'; then
+    note "mesh: IPv6 is off on '$MCONN', so Ops lists only the nodes in NODE_IP (turn IPv6 on to see every node)"
+  else
+    note "mesh: giving $MESHIF the IPv6 address OpenMANET's node list answers (the port blinks once)"
+    act $SUDO nmcli connection modify "$MCONN" ipv6.addr-gen-mode eui64
+    act $SUDO nmcli connection up "$MCONN"
+  fi
+fi
 
 # ---------------------------------------------------------------- 4. switch to the new version
 say "4/6 Switch to $NEW and start"
@@ -230,8 +242,11 @@ icon() {   # icon FILE NAME COMMENT URL ICONPATH
   mkdir -p "$APPS" "$DESK"
   printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s --app=%s\nIcon=%s\nTerminal=false\nCategories=Network;\n' \
     "$2" "$3" "$BROWSER" "$4" "$5" > "$APPS/$1"
-  install -m 755 "$APPS/$1" "$DESK/$1"
-  note "icon: $2"
+  if [ "$ICON" = 1 ] || [ -e "$DESK/$1" ]; then     # a desktop icon you deleted stays deleted (the menu entry stays)
+    install -m 755 "$APPS/$1" "$DESK/$1"; note "icon: $2 (menu and desktop)"
+  else
+    note "icon: $2 (menu only)"
+  fi
 }
 if [ "$ICON" = 1 ] || [ -f "$APPS/manet-dashboard-app.desktop" ]; then icon manet-dashboard-app.desktop "TAK MESH TOC Ops" "TAK MESH TOC status dashboard" "http://127.0.0.1:8080" "$CURL/dashboard/icon.svg"; fi
 if [ "$ICON" = 1 ] || [ -f "$APPS/manet-chat.desktop" ]; then icon manet-chat.desktop "TAK MESH TOC Chat" "ATAK chat and voice from the deck" "http://127.0.0.1:8090" "$CURL/chat/icon.svg"; fi

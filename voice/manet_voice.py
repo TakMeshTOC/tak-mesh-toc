@@ -32,7 +32,7 @@ sys.path[:0] = [HERE, os.path.join(HERE, "..", "common")]
 import opuscodec                       # noqa: E402
 from mumbleclient import MumbleClient  # noqa: E402
 try:
-    from deckcommon import apply_deck  # noqa: E402
+    from deckcommon import apply_deck, iface_ipv4, mesh_iface, is_auto, watch_mesh_addr  # noqa: E402
 except ImportError:                    # running from a bare copy of voice/
     apply_deck = None
 
@@ -605,7 +605,34 @@ def load_cfg(path):
     if apply_deck:
         for note in apply_deck(cp, "voice", "voice", DEFAULTS):
             log.warning("Config: %s", note)
-    return dict(cp["voice"])
+    out = dict(cp["voice"])
+    if apply_deck:
+        out["_MESH_IFACE"] = mesh_iface(cp, "voice")
+    return out
+
+
+def resolve_mesh_addr(cfg):
+    """MESH_ADDR = auto: wait for the mesh port's address, use it, and restart (systemd starts Voice again) when
+    the node hands out a new one. A fixed address is used as it is."""
+    if not apply_deck or not is_auto(cfg["MESH_ADDR"]):
+        return
+    iface, told = cfg.get("_MESH_IFACE", "eth0"), False
+    while True:
+        ip = iface_ipv4(iface)
+        if ip:
+            break
+        if not told:
+            log.warning("MESH_ADDR auto: %s has no address yet (node unplugged or off?); waiting", iface)
+            told = True
+        time.sleep(3)
+    cfg["MESH_ADDR"] = ip
+    log.info("MESH_ADDR auto: %s on %s (followed if the node hands out a new one)", ip, iface)
+
+    def changed(old, new):
+        log.warning("Mesh address on %s is now %s (was %s): restarting Voice to follow it", iface, new, old)
+        logging.shutdown()
+        os._exit(3)
+    watch_mesh_addr(iface, ip, changed)
 
 
 def main():
@@ -622,6 +649,7 @@ def main():
     missing = [k for k in ("MESH_ADDR", "MUMBLE", "MESH_GROUP") if not cfg[k].strip()]
     if missing:
         sys.exit("[voice] needs %s" % ", ".join(missing))
+    resolve_mesh_addr(cfg)
     if not cfg["MUMBLE_CERT_SHA256"].strip():
         log.warning("MUMBLE_CERT_SHA256 is empty: the Mumble server's certificate is not checked")
     g = Gateway(cfg)

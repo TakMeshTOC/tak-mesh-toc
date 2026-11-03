@@ -38,6 +38,7 @@ class Stub:
     def can_restart(self): return True
 
 def collector(**kw):
+    kw.setdefault("MESH_DISCOVERY", "off")           # the mesh's own list (alfred) is tested in meshwatch_test.py
     cfg = dict(ds.DEFAULTS, GPS="off", SERVER_HOST="127.0.0.1", SERVER_PORT="1", **kw)
     return ds.Collector(cfg, Ev(), alerts=Stub(), control=Stub())
 DECK = {"iface_up": True, "mtu_ok": True}
@@ -52,11 +53,16 @@ def act(c, m, rate=12):
 c = collector(NODE_IP="10.41.254.10, 10.41.254.20", NODE_NAME="node 1, node 2")
 UP.clear(); UP["10.41.254.10"] = 0.3
 m = mesh(c, age=2)
-check("two nodes, one off: tile LINK OK (green)", (m["tile"], m["text"], m["state"]) == ("ok", "LINK OK", "LINK OK"), m)
+check("two nodes, one off: tile 1 OF 2 NODES (amber), panel NODE LOST", (m["tile"], m["text"], m["state"]) == ("warn", "1 OF 2 NODES", "NODE LOST"), m)
 check("two nodes, one off: names kept in order, node 2 'not answering'",
       [(n["name"], n["ok"]) for n in m["nodes"]] == [("node 1", True), ("node 2", False)], m["nodes"])
 check("two nodes, one off: node 1 is the nearest", [n["name"] for n in m["nodes"] if n["nearest"]] == ["node 1"])
 check("two nodes, one off: TAK BRIDGE keeps RELAYING", act(c, m) == "hop")
+
+UP["10.41.254.20"] = 0.6
+m = mesh(c, age=2)
+check("two nodes, both answer: tile 2 NODES (green)", (m["tile"], m["text"], m["state"]) == ("ok", "2 NODES", "LINK OK"), m)
+UP.clear(); UP["10.41.254.10"] = 0.3
 
 # 2. the cable moves to node 2 (node 1 still on, reached through the mesh: slower)
 UP.clear(); UP["10.41.254.10"] = 3.1; UP["10.41.254.20"] = 0.4
@@ -123,7 +129,7 @@ del UP["10.41.254.20"]
 c._found_t -= 61
 m = mesh(c, age=1)
 check("a found node that goes quiet shows as not answering",
-      ("10.41.254.20", False) in [(n["ip"], n["ok"]) for n in m["nodes"]] and m["tile"] == "ok", m["nodes"])
+      ("10.41.254.20", False) in [(n["ip"], n["ok"]) for n in m["nodes"]] and m["tile"] == "warn", m["nodes"])
 c._found["10.41.254.20"] -= 601; c._found["10.41.0.1"] -= 601; c._found_t -= 61
 m = mesh(c, age=1)
 check("...and is dropped after 10 minutes", [n["ip"] for n in m["nodes"]] == ["10.41.254.10"], m["nodes"])
@@ -159,7 +165,7 @@ check("the dashboard logs the same events", 'self.changed("mesh_up", mesh["tile"
 snap = ds.mock_status("hop", Ev())
 items = ds.setup_checks(dict(ds.DEFAULTS), snap, Stub(), Stub())
 it = [i for i in items if i["title"] == "Mesh node answers"]
-check("Setup: one line naming each node and whether it answers", it and "node 1 at 10.41.0.1 answers" in it[0]["detail"] and "node 2" in it[0]["detail"], it)
+check("Setup: one line naming each node and whether it answers", it and "NODE_1 at 10.41.0.1 answers" in it[0]["detail"] and "NODE_2" in it[0]["detail"], it)
 snap["mesh"]["nodes"] = []
 check("Setup: nothing set or found says how to set NODE_IP",
       any(i["title"] == "Mesh nodes" and "NODE_IP" in i["fix"] for i in ds.setup_checks(dict(ds.DEFAULTS), snap, Stub(), Stub())))
@@ -182,8 +188,8 @@ if sync_playwright:
         with sync_playwright() as pw:
             b = pw.chromium.launch(); pg = b.new_page(viewport={"width": 1280, "height": 720})
             pg.goto("http://127.0.0.1:%d/" % port); pg.wait_for_timeout(2500)
-            rows = pg.inner_text("#d-rows")
-            check("page: each node listed, the nearest marked", "node 1 (nearest)" in rows and "node 2" in rows, rows[:200])
+            rows, top = pg.inner_text("#d-rows"), pg.inner_text("#d-bluf")
+            check("page: one-glance summary on top of MESH + DECK", "3 NODES" in top and "ALL OK" in top and "slowest link" in top, top)
             check("page: mesh traffic row", "mesh traffic" in rows, rows[:200])
             check("page: panel state from the server", pg.inner_text("#d-state") == "LINK OK")
             pg.route("**/api/status*", lambda r: r.fulfill(content_type="application/json", body=json.dumps(dict(
@@ -192,9 +198,9 @@ if sync_playwright:
                           node_ok=False, tile="warn", text="LINK OK", state="TRAFFIC ONLY", traffic=True, traffic_age=4,
                           nodes=[{"name": "10.41.254.20", "ip": "10.41.254.20", "ok": False, "rtt_ms": None, "found": True, "nearest": False}])))))
             pg.reload(); pg.wait_for_timeout(2500)
-            rows = pg.inner_text("#d-rows")
-            check("page: found node shown by the end of its address", ".254.20" in rows and "10.41.254.20" not in rows, rows[:200])
-            check("page: no ping but traffic says the mesh is up", "none answer ping" in rows and "mesh is up" in rows and pg.inner_text("#d-state") == "TRAFFIC ONLY", rows[:200])
+            rows, top = pg.inner_text("#d-rows"), pg.inner_text("#d-bluf")
+            check("page: found node shown by the end of its address", ".254.20" in top and "10.41.254.20" not in top, top)
+            check("page: no ping but traffic says the mesh is up", "NO NODE ANSWERS" in top and "mesh is up" in rows and pg.inner_text("#d-state") == "TRAFFIC ONLY", (top, rows[:200]))
             b.close()
     finally:
         p.terminate()
