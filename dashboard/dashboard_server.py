@@ -49,6 +49,13 @@ DEFAULTS = {
     "MEDIAMTX_WEBRTC_PORT": "8889",
     "MEDIAMTX_HLS_PORT": "8888",
     "DEFAULT_STREAM": "live",         # path offered in the player when the API is off
+    "VIDEO_MARKERS": "mesh",          # mesh = each stream (live or on demand) as a tap-to-play marker on the mesh map; off = none
+    "VIDEO_MARKER_REFRESH": "180",    # seconds between repeats (a phone that joins sees them within this time)
+    "VIDEO_MARKER_STALE": "600",      # markers vanish this long after the deck stops sending (deck off or out of range)
+    "VIDEO_MARKER_LAT": "",           # where to put them without a GPS fix (blank = wait for GPS)
+    "VIDEO_SOURCE_CHECK": "20",       # seconds between "is it streaming?" checks of on-demand sources (marker only while live)
+    "VIDEO_OWNERS": "",               # pair streams with callsigns: RAVEN21: RAVEN 21, drone1: EAGLE 6 (else: by IP, then by name)
+    "VIDEO_MARKER_LON": "",
     "NODE_NAME": "mesh node",         # names for the NODE_IP addresses, in the same order (comma separated)
     "NODE_IP": "",                    # the mesh node(s) to ping, comma separated; blank = find them on MESH_IFACE
     "MESH_DISCOVERY": "alfred",       # alfred = also list every node the mesh itself knows (OpenMANET gossip, no login); off = NODE_IP only
@@ -692,6 +699,13 @@ def setup_checks(cfg, snap, control, alerts):
             "bash install.sh   (MediaMTX step), or set 'api: yes' in ~/mediamtx/mediamtx.yml and restart MediaMTX", "warn")
     else:
         add(False, "MediaMTX running", "no answer on the RTSP port", "sudo systemctl restart mediamtx   (or: cd ~/mediamtx && ./mediamtx)", "warn")
+    vm = v.get("markers") or {}
+    if vm.get("state") == "on":
+        add(True, "Video markers on the mesh", "%d stream(s) as tap-to-play markers, %d at the person streaming"
+            % (vm.get("count", 0), vm.get("located", 0)))
+    elif vm.get("state") not in (None, "off"):
+        add(False, "Video markers on the mesh", vm["state"],
+            "a GPS fix, or set VIDEO_MARKER_LAT / VIDEO_MARKER_LON in [dashboard]" if "GPS" in vm["state"] else "", "info")
     add(bool(shutil.which("ffmpeg")), "ffmpeg (for Snap)", "", "sudo apt install ffmpeg", "info" if not shutil.which("ffmpeg") else None)
     can = control.can_restart()
     add(can, "Restart button permission", "" if can else "the Restart bridge button stays greyed out",
@@ -708,6 +722,7 @@ def setup_checks(cfg, snap, control, alerts):
 # ---- shared code: GPS/MGRS, team icon, the [deck] config section, suite version -> ../common/deckcommon.py
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 from meshwatch import MeshWatch, grade as link_grade  # noqa: E402
+import videomarkers  # noqa: E402
 from deckcommon import (GpsWatch, to_mgrs, latlon_to_utm, TEAMS, ROLES, team_xml,  # noqa: E402,F401
                         apply_deck, suite_version, font_file)
 
@@ -771,6 +786,11 @@ class Collector(threading.Thread):
             h, _, p = cfg.get("GPS_HOST", "127.0.0.1:2947").partition(":")
             self.gps = GpsWatch(h or "127.0.0.1", p or 2947)
             self.gps.start()
+        self.vmark = None
+        if cfg.get("VIDEO_MARKERS", "mesh").strip().lower() == "mesh":
+            self.vmark = videomarkers.VideoMarkers(refresh=float(cfg.get("VIDEO_MARKER_REFRESH") or 180),
+                                                   stale=float(cfg.get("VIDEO_MARKER_STALE") or 600))
+            self.upstream = videomarkers.UpstreamWatch(every=float(cfg.get("VIDEO_SOURCE_CHECK") or 20))
         self.meshwatch = None
         if cfg.get("MESH_DISCOVERY", "alfred").strip().lower() == "alfred":
             self.meshwatch = MeshWatch(cfg.get("MESH_IFACE", "eth0")).start()
@@ -902,7 +922,7 @@ class Collector(threading.Thread):
                     codecs.append(t.get("codec", t) if isinstance(t, dict) else str(t))
                 paths.append({
                     "name": name, "ready": bool(it.get("ready")),
-                    "source": src.get("type", ""),
+                    "source": src.get("type", ""), "source_id": src.get("id", ""),
                     "readers": len(it.get("readers") or []),
                     "kbps": round(kbps) if kbps is not None else None,
                     "bytes_in": rx, "bytes_out": tx, "codecs": codecs,
@@ -916,6 +936,71 @@ class Collector(threading.Thread):
         return {"api_ok": api_ok, "running": api_ok or rtsp is not None, "paths": paths, "error": err,
                 "rtsp_port": int(cfg["MEDIAMTX_RTSP_PORT"]), "webrtc_port": int(cfg["MEDIAMTX_WEBRTC_PORT"]),
                 "hls_port": int(cfg["MEDIAMTX_HLS_PORT"]), "default_stream": cfg["DEFAULT_STREAM"]}
+
+    def mtx_conf(self):
+        """{path name: its MediaMTX config} (to find on-demand sources), or {} when the config API is not readable."""
+        try:
+            with urlopen(self.cfg["MEDIAMTX_API"].rstrip("/") + "/v3/config/paths/list", timeout=1.5) as r:
+                return {it.get("name", ""): it for it in json.loads(r.read().decode()).get("items", [])}
+        except Exception:
+            return {}
+
+    SESSION_API = {"rtspSession": "rtspsessions", "rtspsSession": "rtspssessions", "rtmpConn": "rtmpconns",
+                   "rtmpsConn": "rtmpsconns", "srtConn": "srtconns", "webRTCSession": "webrtcsessions"}
+
+    def publisher_ip(self, kind, sid):
+        """The IP a stream is being published from (a phone streaming straight to the deck), or None."""
+        api = self.SESSION_API.get(kind)
+        if not api or not sid:
+            return None
+        cache = self.__dict__.setdefault("_pub_ip", {})
+        if sid not in cache:
+            try:
+                with urlopen("%s/v3/%s/get/%s" % (self.cfg["MEDIAMTX_API"].rstrip("/"), api, sid), timeout=1.5) as r:
+                    addr = json.loads(r.read().decode()).get("remoteAddr", "")
+                cache[sid] = addr.rsplit(":", 1)[0].strip("[]") or None
+            except Exception:
+                return None
+        return cache[sid]
+
+    def people(self):
+        """Everyone's last position, from the bridge's status file (never put in the page's feed)."""
+        try:
+            with open(self.cfg["BRIDGE_STATUS_FILE"]) as f:
+                return json.load(f).get("people") or []
+        except (OSError, ValueError):
+            return []
+
+    def video_markers(self, video, deck, now):
+        """Keep the mesh's VIDEO markers in step with the streams on this deck, each at the person streaming it
+        (see common/videomarkers.py)."""
+        if not self.vmark:
+            return {"state": "off", "count": 0, "last_sent": None, "located": 0}
+        if not video.get("api_ok"):
+            return dict(self.vmark.status, state="MediaMTX API not readable")
+        conf = self.cached("mtx_conf", 60, self.mtx_conf)
+        self.upstream.set_sources(videomarkers.on_demand_sources(conf))
+        items = videomarkers.streams(video["paths"], conf, self.upstream.get())
+        pos = None
+        if self.gps:
+            _, last = self.gps.position()
+            if last:
+                pos = (last["lat"], last["lon"])
+        if pos is None and self.cfg.get("VIDEO_MARKER_LAT") and self.cfg.get("VIDEO_MARKER_LON"):
+            try:
+                pos = (float(self.cfg["VIDEO_MARKER_LAT"]), float(self.cfg["VIDEO_MARKER_LON"]))
+            except ValueError:
+                pass
+        pubs = {p["name"]: self.publisher_ip(p.get("source"), p.get("source_id")) for p in video["paths"] if p.get("ready")}
+        markers = videomarkers.plan(items, self.cached("people", 5, self.people), videomarkers.parse_owners(self.cfg.get("VIDEO_OWNERS")),
+                                    pubs, pos, now, int(self.cfg.get("MGRS_DIGITS", "5")))
+        for name, what, state in self.vmark.tick(now, markers, deck.get("iface_ip"), pos, int(self.cfg["MEDIAMTX_RTSP_PORT"])):
+            m = next((m for m in markers if m["name"] == name), None)
+            if what == "added":
+                self.events.add("info", "Video marker on the mesh: VIDEO %s (%s, %s)" % (name, state, m["owner"] or "at the deck"), "video")
+            else:
+                self.events.add("info", "Video marker removed from the mesh: VIDEO %s" % name, "video")
+        return dict(self.vmark.status)
 
     def deck(self):
         cfg = self.cfg
@@ -1258,6 +1343,7 @@ class Collector(threading.Thread):
             if self.prev.get("activity") is not None:
                 self.events.add("info", "Bridge: %s" % act["text"], "bridge")
             self.prev["activity"] = act["state"]
+        video["markers"] = self.video_markers(video, deck, now)
         gps = gps_tile(self.gps.snapshot(), int(self.cfg.get("MGRS_DIGITS", "5"))) if self.gps else None
         if gps:
             self.changed("gps_fix", gps["mode"] >= 2, "GPS fix (%s)" % gps["fix"], "GPS fix lost", level_down="warn", cat="deck")
@@ -1371,6 +1457,7 @@ def mock_status(scenario, events):
                                                "ping_interval": 20, "timeout": 60, "since_age": 2 * 3600 + 14 * 60, "starts": 3,
                                                "prev_reason": "the server closed the connection", "prev_down_age": 2 * 3600 + 14 * 60}},
         "video": {"api_ok": True, "running": True, "paths": streams, "error": None, "rtsp_port": 8554,
+                  "markers": {"state": "on", "count": 2, "last_sent": t - 40, "located": 1},
                   "webrtc_port": 8889, "hls_port": 8888, "default_stream": "live"},
         "deck": {"iface": "eth0", "iface_ip": "10.41.0.50", "iface_up": True, "mtu": 1460, "mtu_expected": 1460, "mtu_ok": True,
                  "internet": True, "cpu_temp": 52.1, "load": [0.42, 0.51, 0.47], "cpus": 4, "mem_pct": 31, "uptime": 86400 * 2 + 3600,

@@ -1,5 +1,31 @@
 # Changes
 
+## 3.1.10: a VIDEO marker means a live camera
+- **On-demand streams get a marker only while they are actually streaming.** For a source the deck pulls when
+  someone watches (like a server stream), the deck asks the source every 20 s whether it is live: one RTSP DESCRIBE,
+  no video pulled, over the server link, never on the mesh. The marker appears within about 20 s of the camera
+  starting and goes within about 20 s of it stopping. Before, it showed all the time.
+- No answer, a refused login or not checked yet = no marker: the map never shows a camera that isn't on.
+- Uses the login in the source URL (Basic or Digest; with Digest the password never crosses the network). The check
+  runs in its own thread, so Ops never waits on the server. `VIDEO_SOURCE_CHECK = 20` in `[dashboard]`.
+
+## 3.1.9: video on the map, at the person streaming
+- **VIDEO markers on the mesh.** Every stream on the deck's MediaMTX (live now, or an on-demand source the deck pulls
+  from the server) shows on the mesh map as **VIDEO <stream>**. Tap it, then **Play Video**: no feed to type on any
+  phone. Works in ATAK, and in **iTAK on a mesh without internet**, where a hand-typed feed never even connects.
+- **At the person streaming, not the deck.** The marker sits 8 m from them and follows them (resent when they have
+  moved 25 m, at most every 15 s). Remarks give their callsign, MGRS grid, and "last known position HH:MMZ" when the
+  report is over 5 minutes old. Whose stream: `VIDEO_OWNERS` in `[dashboard]` (`RAVEN21: RAVEN 21`), else a mesh
+  phone streaming straight to the deck (by its address), else stream name = callsign (spaces and case ignored).
+  Unknown: by the deck, saying why.
+- Mesh only: the link is the deck's mesh address, so markers never go to the server (sent out the mesh port, not
+  looped back to the bridge). Sent on change and every 3 minutes; they vanish 10 minutes after the deck stops
+  sending, and at once when a stream ends. `VIDEO_MARKERS = off` turns them off.
+- The bridge keeps everyone's last position (mesh and server) for this, in its status file only.
+- Ops SETUP shows the video markers; the event log notes each marker going on or off the mesh.
+- README, iTAK: use the VIDEO markers; Safari plays any deck stream with sound at `http://<deck>:8888/<stream>`.
+- New test `videomarkers_test.py` (with root: a real send reaches a phone on the mesh port and not the deck itself).
+
 ## 3.1.8: Ops sees the whole mesh
 - **Ops finds the mesh nodes by itself.** It reads the node list OpenMANET's nodes share with each other (alfred), with
   no login, so a node added to the mesh shows up without editing `deck.ini`. Nodes named in `NODE_IP` keep your names.

@@ -170,6 +170,20 @@ MEDIAMTX_HLS_PORT = 8888
 # Stream path offered in the player when the API is unavailable
 DEFAULT_STREAM = live
 
+# Video markers: every stream on this deck (live now, or an on-demand source like a server stream) shows on the mesh
+# map as a "VIDEO <stream>" marker, while it is streaming, at the person streaming it (8 m from them, following them as they move; remarks give
+# their callsign and MGRS grid). Tap it, then Play Video. Works in ATAK and in iTAK, which won't play a hand-typed
+# feed on a mesh without internet. Mesh only (the link is the deck's mesh address).
+# Whose stream: 1) VIDEO_OWNERS below, 2) a mesh phone streaming straight to the deck (by its IP),
+# 3) stream name = callsign, ignoring spaces and case (RAVEN21 = RAVEN 21). Unknown: by the deck, and it says so.
+#   VIDEO_MARKERS = mesh              (off = no markers)
+#   VIDEO_OWNERS = RAVEN21: RAVEN 21, drone1: EAGLE 6
+#   VIDEO_MARKER_REFRESH = 180        (seconds between repeats; a phone that joins sees them within this time)
+#   VIDEO_SOURCE_CHECK = 20           (an on-demand source, like a server stream, gets a marker only while it is
+#                                      actually streaming: the deck asks the server every 20 s, no video pulled)
+#   VIDEO_MARKER_STALE = 600          (they vanish this long after the deck stops sending)
+#   VIDEO_MARKER_LAT = / VIDEO_MARKER_LON =   (for unknown streamers when the deck has no GPS fix)
+
 # Mesh nodes. Ops lists every node the mesh itself knows (OpenMANET's alfred gossip, no login), with each node's
 # CPU, load, memory and uptime and the speed of every radio link. Nothing to type: new nodes show up by themselves.
 # alfred needs an EUI-64 IPv6 address on MESH_IFACE (install.sh sets it; meshtoc check says if it's missing).

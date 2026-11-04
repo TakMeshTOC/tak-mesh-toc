@@ -1114,6 +1114,7 @@ CHATROOM_RE = re.compile(rb'<__chat\b[^<>]*?\schatroom="([^"]+)"')
 UID1_RE = re.compile(rb'<chatgrp\b[^<>]*?\suid1="([^"]+)"')
 EVENT_UID_RE = re.compile(rb'<event\b[^<>]*?\suid="([^"]+)"')
 MESH_EP_RE = re.compile(rb"^(\d+\.\d+\.\d+\.\d+):(\d+):(tcp|udp)$")
+POINT_RE = re.compile(rb'<point\b[^<>]*?\slat="(-?[0-9.]+)"[^<>]*?\slon="(-?[0-9.]+)"')
 
 
 class Peers:
@@ -1122,7 +1123,30 @@ class Peers:
     mesh_uid = {}    # uid -> same dict
     server = {}      # callsign.lower() -> {"cs", "uid", "ts"}
     server_uid = {}
+    pos = {}         # uid -> {"cs", "uid", "lat", "lon", "ts", "ip", "via"}: last position of everyone (Ops: VIDEO markers)
     KEEP = 1800.0
+    POS_MAX = 500
+
+    @classmethod
+    def saw_position(cls, data, via):
+        """Remember where a person is (any a-... report with a contact and a real point)."""
+        mc, mu, mp = CALL_RE.search(data), UID_RE.search(data), POINT_RE.search(data)
+        if not (mc and mu and mp):
+            return
+        try:
+            lat, lon = float(mp.group(1)), float(mp.group(2))
+        except ValueError:
+            return
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+            return
+        me = EPV_RE.search(data)
+        ep = MESH_EP_RE.match(me.group(1)) if me else None
+        uid = mu.group(1).decode(errors="replace")
+        cls.pos[uid] = {"cs": mc.group(1).decode(errors="replace"), "uid": uid, "lat": round(lat, 7), "lon": round(lon, 7),
+                        "ts": time.time(), "ip": ep.group(1).decode() if ep else "", "via": via}
+        if len(cls.pos) > cls.POS_MAX:                     # forget the oldest
+            for k in sorted(cls.pos, key=lambda k: cls.pos[k]["ts"])[:len(cls.pos) - cls.POS_MAX]:
+                del cls.pos[k]
 
     @classmethod
     def saw_mesh(cls, data):
@@ -1508,6 +1532,7 @@ class MeshToServer:
             Shared.mark(Shared.mesh_uids, uid)
         if b"<contact" in data and b'type="a-' in data:
             Peers.saw_mesh(data)             # remember this phone's DM address
+            Peers.saw_position(data, "mesh")
         Outbox.keep(data)                     # chats are kept on disk until written to the server
         if self.uplink is not None:
             mt1 = TYPE_RE.search(data)
@@ -1694,6 +1719,7 @@ class ServerToMesh:
                 LocalCopy.send(b"server", data)   # Chat hears server replies even if RETURN_PATH is off
             elif isinstance(data, (bytes, bytearray)) and b'type="a-' in data and b"<contact" in data:
                 Peers.saw_server(data)
+                Peers.saw_position(data, "server")
                 LocalCopy.send(b"server", data)   # positions of server-side people: Chat roster / DMs
             if isinstance(data, (bytes, bytearray)):
                 mu = UID_RE.search(data)
@@ -1866,6 +1892,8 @@ class StatusWriter:
             "return_fair": {"coalesced": Stats.return_coalesced, "dropped": Stats.return_dropped},
             # mesh phones' callsign by IP (voice: a VX phone sends from its ATAK's address)
             "mesh_peers": [{"cs": d["cs"], "ip": d["ip"]} for d in list(Peers.mesh.values()) if now - d["ts"] < Peers.KEEP][:200],
+            # everyone's last position (Ops puts each VIDEO marker at the person streaming it)
+            "people": [dict(d) for d in list(Peers.pos.values()) if now - d["ts"] < Peers.KEEP][:Peers.POS_MAX],
         }
 
     def write_once(self):

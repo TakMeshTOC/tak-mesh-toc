@@ -150,6 +150,12 @@ iTAK works, but it differs from ATAK in ways that silently break things. Lessons
    Cellular Data (or use Airplane Mode with Wi-Fi on) and Wi-Fi Assist (Settings → Cellular), then reconnect to the
    node. Also close iTAK's server connection before moving it to the mesh: until the server notices the old
    connection is gone, server DMs for that iPhone wait in its old server mailbox instead of coming over the mesh.
+8. **Video: use the VIDEO markers.** iTAK won't play a video feed typed in by hand while the phone is on a mesh with
+   no internet (it doesn't even try to connect). It does play video from a map marker: the deck puts every stream
+   it has on the mesh map as **VIDEO <stream>**, at the person streaming it (it follows them; remarks give their
+   callsign and MGRS grid). Tap the marker, then **Play Video**. Name a stream after your callsign (RAVEN21 for
+   RAVEN 21) or pair them with `VIDEO_OWNERS` in `[dashboard]`; a phone streaming straight to the deck is matched by
+   its address. Safari also plays any deck stream, with sound: `http://<deck mesh address>:8888/<stream>`.
 
 ## Voice
 OpenMANET nodes have push-to-talk voice built in: talk groups on the mesh. The deck can carry those talk groups to a
