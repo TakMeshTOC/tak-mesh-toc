@@ -156,6 +156,13 @@ iTAK works, but it differs from ATAK in ways that silently break things. Lessons
    callsign and MGRS grid). Tap the marker, then **Play Video**. Name a stream after your callsign (RAVEN21 for
    RAVEN 21) or pair them with `VIDEO_OWNERS` in `[dashboard]`; a phone streaming straight to the deck is matched by
    its address. Safari also plays any deck stream, with sound: `http://<deck mesh address>:8888/<stream>`.
+9. **Mesh video on the server.** With `VIDEO_RELAY = auto` in `[dashboard]`, a stream a mesh phone sends to the
+   deck is copied up to the TAK server, and server users get a **VIDEO <stream>** marker at that phone, linking to
+   the server's copy (Play Video, as above). First let the deck publish on the server: on OpenTAKServer, add the
+   deck's Tailscale address to `OTS_IP_WHITELIST`. It costs uplink data (about 0.5-0.7 GB per hour per camera);
+   Ops' SETUP tab shows what is being copied and how far behind live it is. If your uplink can't keep up, the copy
+   jumps back to live whenever it falls 5 s behind (tap Play again); keep the camera under about 70% of your upload
+   speed (720p at 1-1.5 Mbit/s suits most cell links).
 
 ## Voice
 OpenMANET nodes have push-to-talk voice built in: talk groups on the mesh. The deck can carry those talk groups to a

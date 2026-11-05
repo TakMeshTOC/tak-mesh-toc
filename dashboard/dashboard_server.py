@@ -25,7 +25,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 from urllib.request import urlopen
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +54,9 @@ DEFAULTS = {
     "VIDEO_MARKER_STALE": "600",      # markers vanish this long after the deck stops sending (deck off or out of range)
     "VIDEO_MARKER_LAT": "",           # where to put them without a GPS fix (blank = wait for GPS)
     "VIDEO_SOURCE_CHECK": "20",       # seconds between "is it streaming?" checks of on-demand sources (marker only while live)
+    "VIDEO_RELAY": "off",             # auto = copy mesh phones' streams up to the TAK server's MediaMTX (port 8554 on the
+                                      # COT_URL host) and show them to server users as VIDEO markers; or rtsp://host:8554
+    "VIDEO_RELAY_SEND": "127.0.0.1:17014",   # the bridge's LOCAL_SEND port (server-only) for the server-side markers
     "VIDEO_OWNERS": "",               # pair streams with callsigns: RAVEN21: RAVEN 21, drone1: EAGLE 6 (else: by IP, then by name)
     "VIDEO_MARKER_LON": "",
     "NODE_NAME": "mesh node",         # names for the NODE_IP addresses, in the same order (comma separated)
@@ -167,6 +170,31 @@ def dm_route_view(d, now):
         return age_since(ts, now)
     return {"state": d.get("state"), "rtt_ms": d.get("rtt_ms"), "since_age": ago(d.get("since")),
             "last_ok_age": ago(d.get("last_ok_ts")), "callsign": d.get("callsign") or "", "sent": d.get("sent", 0)}
+
+
+# errors the bridge survived and counted (its Faults), as Ops shows them: area -> (level, what it means)
+FAULT_TEXT = {
+    "uplink": ("bad", "Mesh -> server failing"),
+    "return": ("bad", "Server -> mesh failing"),
+    "outbox_replay": ("bad", "Saved chats not resent after a restart"),
+    "dm_check": ("warn", "DM route check failing"),
+    "identity": ("warn", "Deck's own report to the server failing"),
+    "itak_udp": ("warn", "Unreadable iTAK direct messages dropped"),
+}
+
+
+def fault_alerts(faults):
+    """The bridge's active faults as alert-strip entries (raising the BRIDGE tile)."""
+    out = []
+    for area, f in sorted((faults or {}).items()):
+        if not isinstance(f, dict) or not f.get("active"):
+            continue
+        level, label = FAULT_TEXT.get(area, ("warn", "Bridge: %s failing" % area))
+        n = int(f.get("count") or 0)
+        out.append({"id": "fault:" + area, "level": level, "tile": "bridge",
+                    "text": "%s: %s" % (label, str(f.get("last") or "")[:120]),
+                    "value": "%d %s" % (n, "dropped" if area == "itak_udp" else "error" if n == 1 else "errors")})
+    return out
 
 
 def outbox_view(d, now):
@@ -290,6 +318,32 @@ def parse_cot_url(cfg):
 _warned = set()
 
 
+class Disk:
+    """Ops' own writes to the deck's disk (event log, trend history, mesh status). A failing write is shown in Ops
+    as an alert, not only in journalctl: a disk gone read-only (a loose USB SSD) is otherwise invisible."""
+    lock = threading.Lock()
+    fails = {}               # what -> (since, message)
+
+    @classmethod
+    def fail(cls, key, msg):
+        with cls.lock:
+            if key not in cls.fails:
+                cls.fails[key] = (time.time(), msg)
+
+    @classmethod
+    def ok(cls, key):
+        with cls.lock:
+            cls.fails.pop(key, None)
+
+    @classmethod
+    def failing(cls):
+        with cls.lock:
+            return sorted(cls.fails.values())[0] if cls.fails else None
+
+
+STALE_AFTER = 10.0           # seconds without a fresh snapshot before the page says its data is old
+
+
 def warn_once(key, msg):
     """Report a non-fatal problem once in the service log (journalctl -u manet-dashboard), not every time it repeats."""
     if key not in _warned:
@@ -330,8 +384,10 @@ class Events:
         try:
             with open(self.path, "a") as f:
                 f.write(json.dumps(ev) + "\n")
+            Disk.ok("events-write")
         except Exception as exc:                   # the page still shows it; only the copy on disk is missing
             warn_once("events-write", "cannot write the event log %s (%s)" % (self.path, exc))
+            Disk.fail("events-write", "cannot write the event log (%s)" % exc)
 
     def recent(self, n=100):
         with self.lock:
@@ -402,8 +458,10 @@ class History:
                 try:
                     with open(self.path, "a") as f:
                         f.write(json.dumps(dict(self.cur, m=self.cur_idx)) + "\n")
+                    Disk.ok("history-write")
                 except Exception as exc:           # the strip still works from memory until the next restart
                     warn_once("history-write", "cannot write the trend history %s (%s)" % (self.path, exc))
+                    Disk.fail("history-write", "cannot write the trend history (%s)" % exc)
                 for k in [k for k in self.minutes if k < idx - STRIP_MINUTES - 5]:
                     del self.minutes[k]
                 self.cur = None
@@ -706,6 +764,14 @@ def setup_checks(cfg, snap, control, alerts):
     elif vm.get("state") not in (None, "off"):
         add(False, "Video markers on the mesh", vm["state"],
             "a GPS fix, or set VIDEO_MARKER_LAT / VIDEO_MARKER_LON in [dashboard]" if "GPS" in vm["state"] else "", "info")
+    rl = v.get("relay") or {}
+    if rl.get("state") == "on":
+        lag = ", ".join("%s %.1f s" % (n, v) for n, v in sorted((rl.get("lag") or {}).items()))
+        add(True, "Video to the server", "copying %d mesh stream(s) to %s%s%s" % (len(rl.get("relaying", [])), rl.get("server", ""),
+            "; behind live: " + lag if lag else "",
+            "; already live there, not copied: " + ", ".join(rl["conflicts"]) if rl.get("conflicts") else ""))
+    elif rl.get("state") not in (None, "off"):
+        add(False, "Video to the server", rl["state"], "sudo apt install ffmpeg" if "ffmpeg" in rl["state"] else "", "warn")
     add(bool(shutil.which("ffmpeg")), "ffmpeg (for Snap)", "", "sudo apt install ffmpeg", "info" if not shutil.which("ffmpeg") else None)
     can = control.can_restart()
     add(can, "Restart button permission", "" if can else "the Restart bridge button stays greyed out",
@@ -723,6 +789,7 @@ def setup_checks(cfg, snap, control, alerts):
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 from meshwatch import MeshWatch, grade as link_grade  # noqa: E402
 import videomarkers  # noqa: E402
+import videorelay  # noqa: E402
 from deckcommon import (GpsWatch, to_mgrs, latlon_to_utm, TEAMS, ROLES, team_xml,  # noqa: E402,F401
                         apply_deck, suite_version, font_file)
 
@@ -775,6 +842,7 @@ class Collector(threading.Thread):
         self.last_traffic = time.time()
         self.lock = threading.Lock()
         self.snapshot = {"booting": True, "now": time.time()}
+        self.collect_error = None
         self.srv_host, self.srv_port = parse_cot_url(cfg)
         self.slow = {}              # cached slow checks: name -> (time, value)
         self.prev = {}              # previous values for change detection
@@ -790,7 +858,21 @@ class Collector(threading.Thread):
         if cfg.get("VIDEO_MARKERS", "mesh").strip().lower() == "mesh":
             self.vmark = videomarkers.VideoMarkers(refresh=float(cfg.get("VIDEO_MARKER_REFRESH") or 180),
                                                    stale=float(cfg.get("VIDEO_MARKER_STALE") or 600))
-            self.upstream = videomarkers.UpstreamWatch(every=float(cfg.get("VIDEO_SOURCE_CHECK") or 20))
+            self.upstream = videomarkers.UpstreamWatch(every=float(cfg.get("VIDEO_SOURCE_CHECK") or 20),
+                                                       log=lambda level, text: self.events.add(level, text, "video"))
+        self.relay = self.smark = None
+        rel = cfg.get("VIDEO_RELAY", "off").strip()
+        if rel.lower() not in ("", "off", "0", "no", "false"):
+            if rel.lower() == "auto":
+                rel = "rtsp://%s:%s" % (self.srv_host, cfg.get("MEDIAMTX_RTSP_PORT", "8554")) if self.srv_host else ""
+            if rel.lower().startswith("rtsp://"):
+                self.relay = videorelay.StreamRelay(rel, local="rtsp://127.0.0.1:%s" % cfg.get("MEDIAMTX_RTSP_PORT", "8554"),
+                                                    log=lambda level, text: self.events.add(level, text, "video"))
+                hp = cfg.get("VIDEO_RELAY_SEND", "127.0.0.1:17014").rpartition(":")
+                dest = (hp[0] or "127.0.0.1", int(hp[2] or 17014))
+                self.smark = videomarkers.VideoMarkers(refresh=float(cfg.get("VIDEO_MARKER_REFRESH") or 180),
+                                                       stale=float(cfg.get("VIDEO_MARKER_STALE") or 600), tag="SVIDEO",
+                                                       send=lambda host, data, dest=dest: self._to_server(dest, data))
         self.meshwatch = None
         if cfg.get("MESH_DISCOVERY", "alfred").strip().lower() == "alfred":
             self.meshwatch = MeshWatch(cfg.get("MESH_IFACE", "eth0")).start()
@@ -849,6 +931,7 @@ class Collector(threading.Thread):
             "mesh_last_from": mesh.get("last_from", ""),
             "mesh_skipped": mesh.get("skipped", 0),
             "mesh_failed": mesh.get("failed", 0),
+            "faults": (st or {}).get("faults") or {} if fresh else {},
             "mesh_malformed": mesh.get("malformed", 0),
             "return_enabled": bool(ret.get("enabled")),
             "return_sent": ret.get("sent", 0),
@@ -963,6 +1046,26 @@ class Collector(threading.Thread):
                 return None
         return cache[sid]
 
+    @staticmethod
+    def _to_server(dest, data):
+        """Hand one CoT to the bridge's LOCAL_SEND port: it goes to the TAK server only, never onto the mesh."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.sendto(data, dest)
+        finally:
+            s.close()
+
+    def server_videos(self, video, people, owners, pubs, pos, now):
+        """Mesh phones' streams copied to the server, and their VIDEO markers for server users."""
+        self.relay.set_wanted(videorelay.wanted(video["paths"]))
+        u = urlsplit(self.relay.server)
+        host, port = u.hostname or "", u.port or 8554
+        markers = videomarkers.plan([(n, "live") for n in self.relay.ok(now)], people, owners, pubs, pos, now,
+                                    int(self.cfg.get("MGRS_DIGITS", "5")))
+        for name, what, _ in self.smark.tick(now, markers, host, pos, port):
+            self.events.add("info", "Video marker %s for server users: VIDEO %s" % ("added" if what == "added" else "removed", name), "video")
+        return dict(self.relay.status(), markers=dict(self.smark.status), server=videorelay.public_url(self.relay.server))
+
     def people(self):
         """Everyone's last position, from the bridge's status file (never put in the page's feed)."""
         try:
@@ -974,13 +1077,11 @@ class Collector(threading.Thread):
     def video_markers(self, video, deck, now):
         """Keep the mesh's VIDEO markers in step with the streams on this deck, each at the person streaming it
         (see common/videomarkers.py)."""
-        if not self.vmark:
-            return {"state": "off", "count": 0, "last_sent": None, "located": 0}
+        off = {"state": "off", "count": 0, "last_sent": None, "located": 0}
+        if not self.vmark and not self.relay:
+            return off
         if not video.get("api_ok"):
-            return dict(self.vmark.status, state="MediaMTX API not readable")
-        conf = self.cached("mtx_conf", 60, self.mtx_conf)
-        self.upstream.set_sources(videomarkers.on_demand_sources(conf))
-        items = videomarkers.streams(video["paths"], conf, self.upstream.get())
+            return dict(self.vmark.status if self.vmark else off, state="MediaMTX API not readable")
         pos = None
         if self.gps:
             _, last = self.gps.position()
@@ -992,8 +1093,15 @@ class Collector(threading.Thread):
             except ValueError:
                 pass
         pubs = {p["name"]: self.publisher_ip(p.get("source"), p.get("source_id")) for p in video["paths"] if p.get("ready")}
-        markers = videomarkers.plan(items, self.cached("people", 5, self.people), videomarkers.parse_owners(self.cfg.get("VIDEO_OWNERS")),
-                                    pubs, pos, now, int(self.cfg.get("MGRS_DIGITS", "5")))
+        people, owners = self.cached("people", 5, self.people), videomarkers.parse_owners(self.cfg.get("VIDEO_OWNERS"))
+        if self.relay:
+            self.relay_status = self.server_videos(video, people, owners, pubs, pos, now)
+        if not self.vmark:
+            return off
+        conf = self.cached("mtx_conf", 60, self.mtx_conf)
+        self.upstream.set_sources(videomarkers.on_demand_sources(conf))
+        items = videomarkers.streams(video["paths"], conf, self.upstream.get())
+        markers = videomarkers.plan(items, people, owners, pubs, pos, now, int(self.cfg.get("MGRS_DIGITS", "5")))
         for name, what, state in self.vmark.tick(now, markers, deck.get("iface_ip"), pos, int(self.cfg["MEDIAMTX_RTSP_PORT"])):
             m = next((m for m in markers if m["name"] == name), None)
             if what == "added":
@@ -1246,8 +1354,10 @@ class Collector(threading.Thread):
             with open(tmp, "w") as f:
                 json.dump(out, f)
             os.replace(tmp, path)
+            Disk.ok("mesh-status")
         except OSError as exc:
             warn_once("mesh-status", "cannot write %s (%s)" % (path, exc))
+            Disk.fail("mesh-status", "cannot write the mesh status file (%s)" % exc)
 
     # -- one pass
     def collect(self):
@@ -1285,6 +1395,18 @@ class Collector(threading.Thread):
             "link_mbps": mesh["slowest_mbps"],
         }
         active = self.alerts.evaluate(metrics, now)
+        faults = fault_alerts(bridge.get("faults"))
+        on = {a["id"][6:]: a for a in faults}
+        for area, (level, label) in FAULT_TEXT.items():      # every known area, so the first fault is logged too
+            self.changed("fault:" + area, area not in on, "%s: working again" % label,
+                         on[area]["text"] if area in on else label, level_down=level, cat="bridge")
+        active = active + faults
+        disk = Disk.failing()
+        self.changed("disk_ok", disk is None, "Deck disk writable again",
+                     "Deck disk not writable: %s" % (disk[1] if disk else ""), cat="deck")
+        if disk:
+            active.append({"id": "disk", "level": "bad", "tile": "deck", "text": "Deck disk not writable: %s" % disk[1][:140],
+                           "value": "since " + time.strftime("%H:%M", time.localtime(disk[0]))})
         rank = {"ok": 0, "info": 0, "warn": 1, "bad": 2}
         for al in active:
             if al["tile"] in tiles:
@@ -1344,6 +1466,7 @@ class Collector(threading.Thread):
                 self.events.add("info", "Bridge: %s" % act["text"], "bridge")
             self.prev["activity"] = act["state"]
         video["markers"] = self.video_markers(video, deck, now)
+        video["relay"] = getattr(self, "relay_status", None) if self.relay else {"state": "off"}
         gps = gps_tile(self.gps.snapshot(), int(self.cfg.get("MGRS_DIGITS", "5"))) if self.gps else None
         if gps:
             self.changed("gps_fix", gps["mode"] >= 2, "GPS fix (%s)" % gps["fix"], "GPS fix lost", level_down="warn", cat="deck")
@@ -1365,21 +1488,44 @@ class Collector(threading.Thread):
     def run(self):
         first = True
         while True:
-            try:
-                snap = self.collect()
-                if first:
-                    self.events.add("info", "Dashboard started")
-                    first = False
-                    snap["events"] = self.events.recent(100)
-                with self.lock:
-                    self.snapshot = snap
-            except Exception as exc:                 # keep going no matter what
-                sys.stderr.write("collector error: %r\n" % (exc,))
+            self.step(first)
+            first = False
             time.sleep(2.0)
 
+    def step(self, first=False):
+        """One collection. A failure keeps the last snapshot, but get() then says it is old and why."""
+        try:
+            snap = self.collect()
+            if first:
+                self.events.add("info", "Dashboard started")
+                snap["events"] = self.events.recent(100)
+            with self.lock:
+                self.snapshot = snap
+            if self.collect_error:
+                self.events.add("ok", "Ops data updating again", "system")
+                self.collect_error = None
+        except Exception as exc:                 # keep going no matter what
+            err = repr(exc)[:160]
+            sys.stderr.write("collector error: %s\n" % err)
+            if not self.collect_error:
+                self.events.add("bad", "Ops data not updating: %s" % err, "system")
+            self.collect_error = err
+
     def get(self):
+        """The latest snapshot. When it is older than STALE_AFTER (collecting failed or hung), a copy with an alert
+        saying so, so the page can't show old data as if it were live."""
         with self.lock:
-            return self.snapshot
+            snap = self.snapshot
+        age = time.time() - float(snap.get("now") or 0)
+        if snap.get("booting") or age < STALE_AFTER:
+            return snap
+        snap = dict(snap)
+        why = self.collect_error or "collecting is stuck"
+        snap["alerts"] = [{"id": "ops_stale", "level": "bad", "tile": "", "value": "%d s old" % age,
+                           "text": "Ops data stale since %s: %s" % (time.strftime("%H:%M:%S", time.localtime(snap.get("now") or 0)), why)}] \
+            + list(snap.get("alerts") or [])
+        snap["stale"] = True
+        return snap
 
 
 # ----------------------------------------------------------------- mock data

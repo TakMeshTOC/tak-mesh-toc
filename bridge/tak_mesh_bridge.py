@@ -378,6 +378,7 @@ class Outbox:
         cls.maxn = max(10, int(cfg.get("OUTBOX_MAX", "5000")))
         cls.pending, cls.by_data, cls.written, cls.seq, cls.lines = {}, {}, {}, 0, 0
         cls.loaded = cls.replayed = cls.expired = 0
+        cls.replay_done = set()
         cls.confirmed = cls.unconfirmed_done = cls.write_errors = 0
         cls.last_write_error = ""
         if cls.path is None:
@@ -543,8 +544,14 @@ class Outbox:
         putting more than that before anything drains it would wait forever (the bridge used to hang at start that way)."""
         if not cls.pending:
             return
+        done = getattr(cls, "replay_done", None)
+        if done is None:
+            done = cls.replay_done = set()
         for i in sorted(cls.pending, key=lambda k: cls.pending[k][0]):
+            if i in done:                         # already queued by an earlier try: never sent twice
+                continue
             await tx_queue.put(cls.pending[i][1])
+            done.add(i)
             cls.replayed += 1
         log.info("Outbox: %d waiting chat(s) sent again", cls.replayed)
 
@@ -569,11 +576,21 @@ class OutboxReplay:
     def __init__(self, tx_queue):
         self.tx_queue = tx_queue
 
+    RETRY_FIRST, RETRY_MAX = 5.0, 300.0
+
     async def run(self, _=-1):
-        try:
-            await Outbox.replay(self.tx_queue)
-        except Exception as exc:
-            log.warning("Outbox: replay failed: %s", exc)
+        wait = self.RETRY_FIRST
+        while True:                               # until every saved chat is queued; then sleep forever
+            try:
+                await Outbox.replay(self.tx_queue)
+                if Faults.areas.get("outbox_replay", {}).get("sticky"):
+                    log.info("Outbox: replay worked on a later try")
+                Faults.clear("outbox_replay")
+                break
+            except Exception as exc:
+                Faults.note("outbox_replay", exc, sticky=True)
+                await asyncio.sleep(wait)
+                wait = min(self.RETRY_MAX, wait * 2)
         while True:
             await asyncio.sleep(3600)
 
@@ -665,7 +682,7 @@ class DMSelfTest:
                 cls.sent += 1
                 await self.tx_queue.put(cls.xml(cls.seq))
             except Exception as exc:
-                log.warning("DM route check: %s", exc)
+                Faults.note("dm_check", exc, hold=2.5 * cls.interval)
 
 
 class Uplink:
@@ -753,7 +770,7 @@ class Uplink:
                 except asyncio.TimeoutError:
                     pass
             except Exception as exc:              # never end: PyTAK stops everything when a task ends
-                log.warning("uplink: %s", exc)
+                Faults.note("uplink", exc)
                 await asyncio.sleep(1)
 
     def waiting(self):
@@ -779,6 +796,39 @@ def classify(etype):
     if etype.startswith((b"b-m-p", b"u-d-")):
         return "marker"
     return "other"
+
+
+class Faults:
+    """Errors a loop survives, kept where Ops can see them (not only in journalctl): per area, how many, the last one
+    and when. "Active" = happened in the last ACTIVE_S seconds, or a sticky one not yet cleared. The log gets the first
+    three of each area and then every 100th, so a fault repeating every second can't flood the journal."""
+    ACTIVE_S = 60.0
+    areas = {}
+
+    @classmethod
+    def note(cls, area, exc, sticky=False, hold=None):
+        """hold: seconds it stays active after this error (a loop that runs every few minutes needs longer)."""
+        f = cls.areas.setdefault(area, {"count": 0, "last": "", "last_ts": 0.0, "sticky": False, "hold": cls.ACTIVE_S})
+        f["hold"] = max(cls.ACTIVE_S, hold or 0)
+        f["count"] += 1
+        f["last"] = ("%s: %s" % (type(exc).__name__, exc))[:200]
+        f["last_ts"] = time.time()
+        f["sticky"] = f["sticky"] or sticky
+        if f["count"] <= 3 or f["count"] % 100 == 0:
+            log.warning("%s: %s (%d so far)", area, f["last"], f["count"])
+
+    @classmethod
+    def clear(cls, area):
+        """It works now: no longer active (the count and the last error stay for the record)."""
+        if area in cls.areas:
+            cls.areas[area]["sticky"] = False
+            cls.areas[area]["hold"] = 0.0
+
+    @classmethod
+    def status(cls, now=None):
+        now = time.time() if now is None else now
+        return {a: {"count": f["count"], "last": f["last"], "last_ts": f["last_ts"],
+                    "active": f["sticky"] or now - f["last_ts"] < f.get("hold", cls.ACTIVE_S)} for a, f in cls.areas.items()}
 
 
 class Stats:
@@ -935,6 +985,9 @@ class LocalSend:
                 if addr[0] != "127.0.0.1" or b"<event" not in data or len(data) > 65000:
                     return
                 try:
+                    mu = UID_RE.search(data)
+                    if mu:                    # server only: never relayed back onto the mesh when the server echoes it
+                        Shared.mark(Shared.mesh_uids, mu.group(1))
                     Outbox.keep(data)
                     q.put_nowait(data)
                     Stats.note("up", classify(TYPE_RE.search(data).group(1)) if TYPE_RE.search(data) else "other")
@@ -1239,7 +1292,8 @@ class DMRelay:
         if data[:1] == b"\xbf":
             try:
                 data = (proto_to_xml(data) if takproto is not None else None) or b""
-            except Exception:
+            except Exception as exc:              # unreadable: dropped, but counted where Ops shows it
+                Faults.note("itak_udp", exc)
                 data = b""
         j, k = data.find(b"<event"), data.rfind(b"</event>")
         if j >= 0 and k > j:
@@ -1397,7 +1451,7 @@ class Identity:
                                  "shown live" if live else "kept at last spot (stale)" if pos else "not shown")
                 was_live = live
             except Exception as exc:
-                log.warning("identity resend failed: %s", exc)
+                Faults.note("identity", exc, hold=1.5 * (self.gps_interval if self.gps else self.interval))
 
 
 class MeshToServer:
@@ -1790,7 +1844,7 @@ class ServerToMesh:
                     self.tokens -= 1
                     self._send(*item)
             except Exception as exc:
-                log.warning("return path: %s", exc)
+                Faults.note("return", exc)
                 await asyncio.sleep(1)
 
     def _send(self, data, etype, uid):
@@ -1880,7 +1934,7 @@ class StatusWriter:
             "server": {"rx_events": Stats.server_rx, "last_rx_ts": Stats.server_last_rx_ts},
             "per_minute": Stats.per_minute(),
             "boot_id": self.boot_id,
-            "dm_route": DMSelfTest.status(), "outbox": Outbox.status(),
+            "dm_route": DMSelfTest.status(), "outbox": Outbox.status(), "faults": Faults.status(now),
             "link": {"state": Link.state, "reason": Link.reason, "since": Link.connected_ts,
                      "ping_interval": Link.interval, "timeout": Link.timeout,
                      "pings": Link.pings, "pongs": Link.pongs, "answers_pings": Link.pong_seen,

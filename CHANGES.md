@@ -1,5 +1,50 @@
 # Changes
 
+## 3.1.13: failures you can see
+From an audit of every catch-all error handler (53 of them): the ones that could hide a real failure now show it in
+Ops, not only in journalctl. No new features or settings.
+- **Bridge errors show in Ops.** Errors the bridge survives are counted per area with the last reason: mesh -> server,
+  server -> mesh, the saved-chat replay, the DM route check, the deck's own report, unreadable iTAK DMs. While one
+  keeps happening it is in Ops' alert strip (red for the traffic paths and the replay, amber for the rest), raises
+  the BRIDGE tile, and the event log notes it starting and "working again". The journal gets the first 3 of each and
+  then every 100th, so a repeating error can't flood it.
+- **The saved-chat replay is retried.** If resending the outbox after a restart failed, it used to give up until the
+  next restart. Now it retries (5 s, growing to 5 min) and never sends a chat twice.
+- **Ops says when its own data is old.** If collecting fails or hangs, the page shows "Ops data stale since HH:MM:SS"
+  with the reason instead of old data that looks live.
+- **"Deck disk not writable"** is an Ops alert when Ops can't write its files (a USB SSD gone read-only), and clears
+  when writes work again.
+- **Server-stream marker check:** if the check itself fails, the event log says so once (it was silent).
+- **Chat:** a packet that breaks message handling is counted and logged (it was invisible). If the sender itself
+  fails, the OUTBOX pill turns red: **OUTBOX n · STUCK**, with the reason in its tooltip.
+- New test `faults_test.py` forces each failure and checks it shows; `outbox_test.py` covers the chat ones.
+
+## 3.1.12: lag guard for mesh video on the server
+- **The server copy no longer drifts behind live.** When the camera sends more than the deck's uplink carries, video
+  queued up and the server copy fell further and further behind. Now each copy's lag is measured (bytes waiting in
+  its send queue at the camera's bitrate, plus any time ffmpeg itself fell behind); past 5 s the deck drops the
+  backlog and restarts the copy at once, so server users jump back to live (iTAK may need Play again). The server
+  marker stays up throughout. A copy runs at least 20 s before it can be restarted.
+- 3 jumps in 10 minutes: the event log warns that the camera's bitrate (shown) is more than the uplink carries.
+- Ops SETUP shows how far behind live each server copy is.
+- README: keep the camera under about 70% of your upload speed (720p at 1-1.5 Mbit/s suits most cell links).
+
+## 3.1.11: mesh video on the server
+- **Mesh phones' streams reach server users.** With `VIDEO_RELAY = auto` in `[dashboard]`, every stream a mesh phone
+  sends to the deck is copied up to the TAK server's MediaMTX under the same name (one ffmpeg per stream, no
+  re-encoding): the deck's uplink carries it once however many server users watch. About 0.5-0.7 GB per hour per camera.
+- **Server users get a VIDEO marker at the phone**, linking to the server's copy (Play Video). Sent through the
+  bridge's server-only port and marked so the server's echo never comes back onto the mesh. Its own ID (SVIDEO), so
+  it never collides with the mesh marker for the same stream. Appears once the copy has run 3 s; goes when it stops.
+- **Safe by design.** Only streams published TO the deck are copied (never one it pulls from the server: no loops).
+  A name already live on the server is left alone (copying would take it over) and the event log says so. A refused
+  copy is logged with the reason and retried after 5 s, waiting longer each time up to 60 s. Logins never appear in
+  markers, logs or the page. Copies stop with Ops.
+- The server must accept the deck publishing: on OpenTAKServer, add the deck's Tailscale address to
+  `OTS_IP_WHITELIST`. Needs ffmpeg (install.sh notes if it's missing). Off by default.
+- Ops SETUP: "Video to the server" line. Works with the mesh markers on or off.
+- New test `videorelay_test.py`.
+
 ## 3.1.10: a VIDEO marker means a live camera
 - **On-demand streams get a marker only while they are actually streaming.** For a source the deck pulls when
   someone watches (like a server stream), the deck asks the source every 20 s whether it is live: one RTSP DESCRIBE,

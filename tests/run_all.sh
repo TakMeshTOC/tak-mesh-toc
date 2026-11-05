@@ -30,6 +30,8 @@ clean meshaddr_test.py
 clean deck_status_test.py
 clean meshwatch_test.py
 clean videomarkers_test.py
+clean videorelay_test.py
+clean faults_test.py
 clean ident_check.py
 clean durability_test.py
 clean pytak_patch_test.py

@@ -305,6 +305,8 @@ class Chat:
         self.msgs = deque(maxlen=int(cfg["HISTORY_KEEP"]))
         self.by_id = {}
         self.outbox = []                 # message dicts waiting to go out (oldest first)
+        self.outbox_error = ""           # why the sender itself failed (shown as OUTBOX ... STUCK), "" = fine
+        self.bad_packets, self.last_bad = 0, ""   # packets a listener could not handle
         self.roster = {}                 # uid -> {"callsign", "last", "src"}
         self.seq = 0
         self.sends = deque()
@@ -701,7 +703,8 @@ class Chat:
                 "bridge_copy": {"listening": self.copy_ok,
                                 "last_rx_age": (time.time() - self.last_copy_rx) if self.last_copy_rx else None},
                 "bridge": self.bridge_state(),
-                "outbox": {"waiting": waiting, "held": held},
+                "outbox": {"waiting": waiting, "held": held, "error": getattr(self, "outbox_error", "")},
+                "bad_packets": {"count": getattr(self, "bad_packets", 0), "last": getattr(self, "last_bad", "")},
                 "roster": self.roster_list(), "roster_minutes": float(self.cfg["ROSTER_MINUTES"]),
                 "takproto": takproto is not None,
                 "gps": (lambda g: {"on": True, "mode": g["mode"], "fix_age": g["fix_age"], "gpsd": g["gpsd"]})(self.gps.snapshot()) if self.gps else {"on": False},
@@ -811,8 +814,11 @@ def group_listener(chat, group, handle, flag, name):
                 break
             try:
                 handle(data, addr)
-            except Exception as exc:          # one bad packet must not stop the listener
-                log.debug("bad packet on %s: %s", name, exc)
+            except Exception as exc:          # one bad packet must not stop the listener, but it is counted and said
+                n = chat.bad_packets = getattr(chat, "bad_packets", 0) + 1
+                chat.last_bad = ("%s on %s: %s: %s" % (time.strftime("%H:%M:%S"), name, type(exc).__name__, exc))[:200]
+                if n <= 3 or n % 100 == 0:
+                    log.warning("A %s packet couldn't be handled (%s: %s); %d so far", name, type(exc).__name__, exc, n)
         try:
             s.close()
         except OSError:
@@ -1007,6 +1013,7 @@ def sa_sender(chat):
 
 
 def outbox_worker(chat):
+    fails = 0
     while True:
         time.sleep(3)
         try:
@@ -1014,8 +1021,14 @@ def outbox_worker(chat):
                 busy = bool(chat.outbox)
             if busy:
                 chat.flush()
-        except Exception as exc:
-            log.warning("outbox: %s", exc)
+            if chat.outbox_error:
+                log.info("Outbox: sending works again")
+            chat.outbox_error, fails = "", 0
+        except Exception as exc:              # the sender itself failed: shown on the chat screen (OUTBOX ... STUCK)
+            fails += 1
+            chat.outbox_error = ("%s: %s" % (type(exc).__name__, exc))[:200]
+            if fails <= 3 or fails % 100 == 0:
+                log.warning("Outbox: sending failed (%s); %d times so far", chat.outbox_error, fails)
 
 
 # ---------------------------------------------------------------- web

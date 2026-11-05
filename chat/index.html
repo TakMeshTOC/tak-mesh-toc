@@ -325,7 +325,8 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       else if (info.bridge_copy.listening === false) pill("psrv", "warn", "SERVER: NO COPY PORT", "Port for bridge copies is busy");
       else pill("psrv", "ok", "SERVER RELAY", "Bridge running");
       const ob = info.outbox || { waiting: 0, held: 0 };
-      if (ob.waiting) pill("pout", ob.held ? "bad" : "warn", "OUTBOX " + ob.waiting + (ob.held ? " (" + ob.held + " HELD)" : ""), "Waiting for the mesh. Held = waited too long; SEND or DROP it in the list.");
+      if (ob.error) pill("pout", "bad", "OUTBOX " + ob.waiting + " · STUCK", "Chat's sender failed: " + ob.error + ". Messages are kept; if this doesn't clear, restart: meshtoc restart");
+      else if (ob.waiting) pill("pout", ob.held ? "bad" : "warn", "OUTBOX " + ob.waiting + (ob.held ? " (" + ob.held + " HELD)" : ""), "Waiting for the mesh. Held = waited too long; SEND or DROP it in the list.");
       else $("pout").className = "pill hide";
       $("rtitle").textContent = "ON NET · " + info.roster.length + "  (" + info.roster_minutes + " MIN)";
       const now = Date.now() / 1000;

@@ -189,6 +189,7 @@ done
 rm -rf "$TMPD"
 # voice needs the system's libopus and, if UFW is on, the OpenMANET talk group ports open on the mesh side
 if ! { ldconfig -p 2>/dev/null | grep -q 'libopus\.so\.0'; }; then note "voice: libopus not found. Before turning VOICE on: sudo apt install libopus0"; fi
+if ! command -v ffmpeg >/dev/null 2>&1; then note "video: ffmpeg not found. Before turning VIDEO_RELAY on: sudo apt install ffmpeg"; fi
 # The firewall rule keeps its pre-3.0 comment ("MANET_MESH_BRIDGE voice"): uninstall.sh finds the rule by it on decks
 # that were set up before the rename.
 if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q '^Status: active'; then

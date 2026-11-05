@@ -49,9 +49,10 @@ def norm(s):
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def marker_uid(host, path):
+def marker_uid(host, path, tag="VIDEO"):
+    """VIDEO = the mesh's marker (link to the deck); SVIDEO = the server's (link to the server's copy)."""
     h = re.sub(r"[^A-Za-z0-9-]", "", host or "deck") or "deck"
-    return "DECK-%s-VIDEO-%s" % (h, re.sub(r"[^A-Za-z0-9_.-]", "_", path))
+    return "DECK-%s-%s-%s" % (h, tag, re.sub(r"[^A-Za-z0-9_.-]", "_", path))
 
 
 def place(lat, lon, i, spacing=DECK_SPACING_M):
@@ -176,8 +177,10 @@ class UpstreamWatch:
     """Background thread: every `every` seconds, ask each on-demand source whether it is streaming (rtsp_live).
     get() never blocks. Probes go to the source server (over Tailscale), never onto the mesh."""
 
-    def __init__(self, every=20.0, probe=rtsp_live):
+    def __init__(self, every=20.0, probe=rtsp_live, log=None):
         self.every, self.probe = float(every), probe
+        self.log = log or (lambda level, text: None)
+        self.error = None                 # the check's own failure, said once (not every 20 s)
         self.sources, self.state = {}, {}
         self.lock = threading.Lock()
         self.thread = None
@@ -204,8 +207,14 @@ class UpstreamWatch:
         while True:
             try:
                 self.poll()
-            except Exception:            # never lose the thread
-                pass
+                if self.error:
+                    self.log("ok", "Video source check working again")
+                    self.error = None
+            except Exception as exc:     # never lose the thread, but say why server-stream markers stopped
+                err = ("%s: %s" % (type(exc).__name__, exc))[:160]
+                if err != self.error:
+                    self.log("warn", "Video source check failed (%s): server-stream markers can't appear until it works" % err)
+                self.error = err
             time.sleep(self.every)
 
     def get(self):
@@ -254,8 +263,9 @@ def plan(items, people, owners, publisher_ips, deck_pos, now, mgrs_digits=5):
 
 
 class VideoMarkers:
-    def __init__(self, host=None, refresh=180.0, stale=600.0, send=None):
+    def __init__(self, host=None, refresh=180.0, stale=600.0, send=None, tag="VIDEO"):
         self.host = host or socket.gethostname()
+        self.tag = tag
         self.refresh, self.stale = float(refresh), float(stale)
         self.send = send or self._send
         self.sig = None              # (deck_ip, ((name, state, owner), ...)) last sent
@@ -277,7 +287,8 @@ class VideoMarkers:
             s.close()
 
     def tick(self, now, markers, deck_ip, deck_pos=None, rtsp_port=8554):
-        """markers: plan(...). Returns the changes as [(name, 'added'|'removed', state)]."""
+        """markers: plan(...). deck_ip: the address in the markers' link (the deck's mesh address; for server-side
+        markers, the server). Returns the changes as [(name, 'added'|'removed', state)]."""
         if not deck_ip:
             self.status = dict(self.status, state="no mesh address", count=0)
             return []
@@ -298,10 +309,10 @@ class VideoMarkers:
             if full:
                 for n in gone:                               # tell phones it's gone: stale now
                     lat, lon = (self.sent_at.get(n) or (0, 0, 0))[1:]
-                    self.send(deck_ip, build_event(marker_uid(self.host, n), n, deck_ip, lat, lon, "on demand", now, now, rtsp_port))
+                    self.send(deck_ip, build_event(marker_uid(self.host, n, self.tag), n, deck_ip, lat, lon, "on demand", now, now, rtsp_port))
                     self.sent_at.pop(n, None)
             for m in (markers if full else moved):
-                self.send(deck_ip, build_event(marker_uid(self.host, m["name"]), m["name"], deck_ip, m["lat"], m["lon"],
+                self.send(deck_ip, build_event(marker_uid(self.host, m["name"], self.tag), m["name"], deck_ip, m["lat"], m["lon"],
                                                m["state"], now, now + self.stale, rtsp_port, m["remarks"]))
                 self.sent_at[m["name"]] = (now, m["lat"], m["lon"])
         except OSError as exc:

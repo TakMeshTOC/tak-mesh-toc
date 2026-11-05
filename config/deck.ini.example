@@ -184,6 +184,17 @@ DEFAULT_STREAM = live
 #   VIDEO_MARKER_STALE = 600          (they vanish this long after the deck stops sending)
 #   VIDEO_MARKER_LAT = / VIDEO_MARKER_LON =   (for unknown streamers when the deck has no GPS fix)
 
+# Mesh video to the server: a stream a mesh phone sends to the deck is copied up to the TAK server's MediaMTX (one
+# copy however many watch, no re-encoding) and server users get a VIDEO marker at the phone, linking to the server's
+# copy. Only streams published TO the deck are copied (never one it pulls from the server), and a name already live
+# on the server is left alone. Uses uplink data: about 0.5-0.7 GB per hour per camera. Needs ffmpeg (sudo apt install ffmpeg).
+# Lag guard: if the uplink can't keep up and the server copy falls 5 s behind live, the deck drops the backlog
+# and jumps back to live (server viewers may need to tap Play again); repeated jumps warn you to lower the camera's bitrate.
+# The server must accept the deck publishing: on OpenTAKServer add the deck's server-side (Tailscale) address to
+# OTS_IP_WHITELIST, or put a login in the URL (rtsp://user:password@host:8554; it never appears in markers or logs).
+#   VIDEO_RELAY = off                 (auto = the COT_URL server, port 8554; or rtsp://host:8554)
+#   VIDEO_RELAY_SEND = 127.0.0.1:17014   (the bridge's LOCAL_SEND: server-side markers go only to the server)
+
 # Mesh nodes. Ops lists every node the mesh itself knows (OpenMANET's alfred gossip, no login), with each node's
 # CPU, load, memory and uptime and the speed of every radio link. Nothing to type: new nodes show up by themselves.
 # alfred needs an EUI-64 IPv6 address on MESH_IFACE (install.sh sets it; meshtoc check says if it's missing).
