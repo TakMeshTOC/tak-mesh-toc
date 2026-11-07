@@ -180,6 +180,8 @@ FAULT_TEXT = {
     "dm_check": ("warn", "DM route check failing"),
     "identity": ("warn", "Deck's own report to the server failing"),
     "itak_udp": ("warn", "Unreadable iTAK direct messages dropped"),
+    "files": ("warn", "File not passed to the server"),
+    "files_down": ("warn", "File not passed to the mesh"),
 }
 
 

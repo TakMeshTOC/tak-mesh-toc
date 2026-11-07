@@ -2,7 +2,8 @@
 """deck_chat.py - TAK MESH TOC Chat: ATAK chat (GeoChat) and DMs on the deck's own screen, mesh and server.
 
   send     GeoChat to the mesh (224.10.10.1:17012 on eth0). The bridge hears it too and forwards it to the server.
-           With the mesh down it waits in an outbox; anything older than OUTBOX_HOLD_SECONDS is held for you.
+           With the mesh down it waits in an outbox; anything older than OUTBOX_HOLD_SECONDS is held for you,
+           and anything still not sent after OUTBOX_EXPIRE_HOURS expires (kept in the log, never sent).
   receive  straight from the mesh, plus a copy from the bridge (127.0.0.1:17013) for replies from the server.
            Both are de-duplicated by message id.
   on net   callsigns heard in positions or chat in the last ROSTER_MINUTES.
@@ -40,10 +41,12 @@ from xml.sax.saxutils import escape, quoteattr
 _VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor")
 if os.path.isdir(_VENDOR) and _VENDOR not in sys.path:
     sys.path.insert(0, _VENDOR)
+TAKPROTO_ERROR = ""
 try:
     import takproto
-except ImportError:
+except Exception as _exc:       # not just ImportError: a different protobuf on this computer breaks it with AttributeError
     takproto = None
+    TAKPROTO_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 
 VERSION = "1.5"                 # Chat itself; the suite version is suite_version()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,6 +67,7 @@ DEFAULTS = {
     "HISTORY_KEEP": "300",
     "MAX_SENDS_PER_10S": "6",
     "OUTBOX_HOLD_SECONDS": "600",          # queued longer than this = held until you confirm
+    "OUTBOX_EXPIRE_HOURS": "12",           # still not sent after this = expired: never sent, kept in the log (0 = never)
     "ROSTER_MINUTES": "10",
     "SA_SEND": "1",                         # announce the deck on the mesh so phones can DM it
     "SA_INTERVAL": "60",
@@ -301,6 +305,7 @@ class Chat:
         self.group = hostport(cfg["CHAT_GROUP"])
         self.ttl = int(cfg["TTL"])
         self.hold_after = float(cfg["OUTBOX_HOLD_SECONDS"])
+        self.expire_after = max(0.0, float(cfg["OUTBOX_EXPIRE_HOURS"])) * 3600
         self.lock = threading.RLock()
         self.msgs = deque(maxlen=int(cfg["HISTORY_KEEP"]))
         self.by_id = {}
@@ -424,12 +429,16 @@ class Chat:
 
     @staticmethod
     def _path(e, horizon):
-        """How a DM to this contact would travel: 'mesh' (direct), 'server' (via bridge) or None."""
-        if e.get("mesh_ep") and e.get("mesh_ts", 0) >= horizon:
+        """How a DM to this contact would travel: 'mesh' (direct), 'server' (via bridge) or None.
+        Where they were heard last wins: a phone that moved from the mesh to the server (or back) switches at its
+        next position report, not after ROSTER_MINUTES."""
+        mesh_ts, srv_ts = e.get("mesh_ts", 0), e.get("server_ts", 0)
+        mesh_ok = bool(e.get("mesh_ep")) and mesh_ts >= horizon
+        if mesh_ok and mesh_ts >= srv_ts:
             return "mesh"
-        if e.get("server_ts"):
+        if srv_ts:
             return "server"
-        return None
+        return "mesh" if mesh_ok else None
 
     def contact(self, who):
         """Find a roster entry by UID or callsign (case-insensitive)."""
@@ -620,6 +629,15 @@ class Chat:
         """Send what can go now. Oldest first; a held message does not block newer ones."""
         changed = []
         with self.lock:
+            if self.expire_after:            # waited too long to still matter: expire it (kept in the log, never sent)
+                now = time.time()
+                for m in [m for m in self.outbox if m["status"] != "sending" and now - m["ts"] > self.expire_after]:
+                    self.outbox.remove(m)
+                    m["status"], m["error"] = "expired", "not sent: waited over %g h" % (self.expire_after / 3600)
+                    self._touch(m)
+                    changed.append(dict(m))
+                if changed:
+                    log.info("Outbox: %d message(s) not sent within %g h expired", len(changed), self.expire_after / 3600)
             pending = list(self.outbox)
         for m in pending:
             with self.lock:
@@ -740,7 +758,8 @@ class Chat:
             note = ""
             if m.get("mine"):
                 note = {"sent": " (relayed)" if m.get("relayed") else " (mesh)", "queued": " (NOT SENT: queued)",
-                        "held": " (NOT SENT: held)", "dropped": " (NOT SENT: dropped)"}.get(m.get("status", "sent"), "")
+                        "held": " (NOT SENT: held)", "dropped": " (NOT SENT: dropped)",
+                        "expired": " (NOT SENT: expired)"}.get(m.get("status", "sent"), "")
             text = m.get("text", "").replace("\n", "\n" + " " * 21)
             who = m.get("from", "?")
             if m.get("dm"):
@@ -1239,6 +1258,9 @@ def main():
                     "contacts reachable over the server work from the command line)")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if TAKPROTO_ERROR:
+        log.warning("TAK Protocol (protobuf) decoding OFF: the bundled takproto did not load (%s). Usually another "
+                    "protobuf on this computer; the service runs python3 -S to avoid that. XML chat still works.", TAKPROTO_ERROR)
     cfg = load_cfg(a.config)
     if a.send is not None:
         cfg["HISTORY_FILE"] = "off"          # the running service records it when it hears it

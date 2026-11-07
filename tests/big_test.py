@@ -126,8 +126,16 @@ try:
           'senderCallsign="ALPHA 1-5" senderUid="ANDROID-mesh1" senderUrl="http://10.41.0.20:8080/getfile?file=/sdcard/atak/tools/datapackage/transfer/abc123/Mission_Package_Sector_7.zip&amp;sender=ALPHA%%201-5" '
           'sha256="%s" sizeInBytes="52428800"/><ackrequest ackrequested="true" tag="Sector 7 package" uid="ack-1"/></detail></event>' % (T, "a" * 64)).encode()
     mesh(fs)
-    check("data-package (file share) announcement for a 50 MB package passes through intact",
-          wait(lambda: server_has(b'sizeInBytes="52428800"')) and server_has(b"Mission_Package_Sector_7.zip&amp;sender"))
+    # (3.1.15: a file notice is never forwarded as it is, its link only works on the mesh; the deck reads the whole
+    # notice and carries files up to FILE_MAX_MB itself. This one is 50 MB, so it's refused and shown in Ops.)
+    def files_fault():
+        try:
+            f = (json.load(open(status)).get("faults") or {}).get("files") or {}
+            return "too big: 50.0 MB" in f.get("last", "") and "Mission_Package_Sector_7_Overlays_and_Imagery_2026-10-22.zip" in f.get("last", "")
+        except (OSError, ValueError):
+            return False
+    check("data-package (file share) announcement for a 50 MB package is read whole: refused as too big, shown in Ops, not sent raw",
+          wait(files_fault, 15) and not server_has(b'sizeInBytes="52428800"'))
     # 4. pretty-printed XML (newlines/tabs inside tags) and escaped characters in a callsign
     pp = ('<event\n\tversion="2.0"\n\tuid="ANDROID-pretty"\n\ttype="a-f-G-U-C"\n\thow="m-g"\n\t%s>\n<point lat="38.2" lon="-104.2" hae="0" ce="9" le="9"/>\n'
           '<detail>\n\t<contact\n\t\tcallsign="Q&amp;A &lt;1&gt;"\n\t\tendpoint="10.41.0.77:4242:tcp"/>\n</detail>\n</event>' % T.replace(" ", "\n\t")).encode()

@@ -21,7 +21,7 @@ It is four programs that run as services on the deck:
 
 | Program | What it does | Service | Page |
 |---|---|---|---|
-| **Bridge** | Mesh ↔ server: positions, chat, markers and drawings; private DMs both ways; the deck's own identity and GPS position | `manet-bridge` | none |
+| **Bridge** | Mesh ↔ server: positions, chat, markers, routes and drawings; private DMs both ways; files (pictures, packages, overlays) both ways; the deck's own identity and GPS position | `manet-bridge` | none |
 | **Chat** (TAK MESH TOC Chat) | ATAK chat on the deck's own screen, mesh and server, including DMs | `manet-chat` | http://127.0.0.1:8090 |
 | **Ops** (TAK MESH TOC Ops) | Status dashboard: server link, mesh nodes and radio links, traffic, video, GPS, voice, and alerts | `manet-dashboard` | http://127.0.0.1:8080 |
 | **Voice** (optional, off by default) | OpenMANET push-to-talk talk groups ↔ Mumble channels on your server | `manet-voice` | Chat's **VOICE** page, http://127.0.0.1:8090/voice |
@@ -307,6 +307,7 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ~/bridge_status.json  ~/bridge_outbox.jsonl  ~/deck_chat_log.jsonl  ~/dashboard_events.jsonl  ~/dashboard_history.jsonl
 ~/voice_status.json  ~/voice_bridges.json   voice: who is talking, which talk groups are switched on (nothing is recorded)
 ~/mesh_status.json                           Ops' mesh summary for the DECK status line
+~/file_cache/                                files from the server waiting for mesh phones (12 h, 200 MB at most)
 ```
 
 ## Upgrade, roll back, remove
@@ -327,7 +328,9 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 
 ## Limits
 - One deck per server identity. Two decks need two certificates and two different `UID`s.
-- Data packages (file transfers) don't cross the bridge yet.
+- Files (pictures, data packages, KML/KMZ, up to 5 MB) cross both ways. A file from a mesh phone reaches everyone
+  on the server (a phone can't say which server person it picked); a file from the server reaches the mesh phones it
+  was sent to, or every mesh phone if it was sent to everyone (each phone downloads its own copy over the radio).
 - Voice: one deck per Mumble server user name (`MUMBLE_USER`). Mumble users talk to the whole channel; Mumble
   whispers and private calls don't reach the mesh.
 - Server → mesh DMs need OpenTAKServer and the helper.

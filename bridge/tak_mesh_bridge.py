@@ -352,10 +352,10 @@ class Outbox:
     Confirmed = a ping written after the chat was answered (TCP keeps order). With pings off or never answered, a
     written chat counts as "sent, unconfirmed" and Ops says so. After a restart, anything unconfirmed is resent oldest
     first; ATAK drops duplicates. A failed disk write is reported on Ops, and the chat is still sent.
-    File: OUTBOX_FILE, one JSON line per chat and per delivery. Limits: OUTBOX_HOURS (24), OUTBOX_MAX (5000).
+    File: OUTBOX_FILE, one JSON line per chat and per delivery. Limits: OUTBOX_HOURS (12), OUTBOX_MAX (5000).
     """
     path = None
-    hours = 24.0
+    hours = 12.0
     maxn = 5000
     pending = {}        # id -> (wall time, bytes)
     by_data = {}        # bytes -> id
@@ -374,7 +374,7 @@ class Outbox:
             os.path.join(os.path.dirname(os.path.expanduser(st)), "bridge_outbox.jsonl")
         p = cfg.get("OUTBOX_FILE", default).strip()
         cls.path = None if p.lower() in ("off", "0", "no", "") else os.path.expanduser(p)
-        cls.hours = max(0.1, float(cfg.get("OUTBOX_HOURS", "24")))
+        cls.hours = max(0.1, float(cfg.get("OUTBOX_HOURS", "12")))
         cls.maxn = max(10, int(cfg.get("OUTBOX_MAX", "5000")))
         cls.pending, cls.by_data, cls.written, cls.seq, cls.lines = {}, {}, {}, 0, 0
         cls.loaded = cls.replayed = cls.expired = 0
@@ -491,6 +491,21 @@ class Outbox:
             i = min(cls.pending, key=lambda k: cls.pending[k][0])
             cls.by_data.pop(cls.pending.pop(i)[1], None)
             cls.expired += 1
+
+    @classmethod
+    def expire(cls):
+        """While running too, not only at start: drop chats that waited over OUTBOX_HOURS for the server."""
+        if cls.path is None or not cls.pending:
+            return
+        cut = time.time() - cls.hours * 3600
+        old = [i for i, (t, _) in cls.pending.items() if t < cut]
+        for i in old:
+            cls.by_data.pop(cls.pending.pop(i)[1], None)
+            cls.written.pop(i, None)
+        if old:
+            cls.expired += len(old)
+            cls._compact()
+            log.info("Outbox: %d chat(s) waited over %.0f h for the server; dropped", len(old), cls.hours)
 
     @classmethod
     def _done(cls, i, confirmed=True):
@@ -896,9 +911,26 @@ def cap_oldest(table, maxn, when=lambda v: v):
     return extra
 
 
+def cot_time(data):
+    """An event's time="..." as UTC seconds, or None. Accepts 2026-11-07T15:00:00Z, with or without fractions."""
+    m = TIME_RE.search(data)
+    if not m:
+        return None
+    s = m.group(1).decode(errors="replace").strip()
+    mm = re.match(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?Z$", s)
+    if not mm:
+        return None
+    try:
+        dt = datetime(*[int(x) for x in mm.groups()[:6]], tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return dt.timestamp() + (float(mm.group(7)) if mm.group(7) else 0.0)
+
+
 class Shared:
     """State shared by both directions (loop prevention)."""
     mesh_uids = {}      # uid -> last time seen ON THE MESH (never send back to the mesh)
+    mesh_times = {}     # uid -> newest report time (UTC seconds) heard from it ON THE MESH
     injected_uids = {}  # uid -> last time WE put it on the mesh (fallback for events with no time stamp)
     server_copies = {}  # (uid, time stamp) -> when the server sent us that exact report
     TTL = 600.0
@@ -935,6 +967,27 @@ class Shared:
     def recent(cls, table, uid):
         t = table.get(uid)
         return t is not None and (time.monotonic() - t) < cls.TTL
+
+    @classmethod
+    def saw_mesh(cls, data, uid):
+        """A report heard on the mesh: remember the phone, and the newest report time it sent there."""
+        cls.mark(cls.mesh_uids, uid)
+        t = cot_time(data)
+        if t is not None and t > cls.mesh_times.get(uid, 0.0):
+            cls.mesh_times[uid] = t
+            if len(cls.mesh_times) > MAX_UIDS:
+                cls.mesh_times.clear()
+
+    @classmethod
+    def from_mesh(cls, data, uid):
+        """True for a server report that is only the mesh's own traffic coming back (never sent to the mesh again).
+        A report NEWER than anything that phone sent on the mesh is the phone itself, now on the server (it moved
+        over), and goes to the mesh at once; before, it waited out the 10 min loop guard, so mesh phones kept its old
+        mesh address and their DMs and files to it went nowhere."""
+        if not cls.recent(cls.mesh_uids, uid):
+            return False
+        t, last = cot_time(data), cls.mesh_times.get(uid)
+        return t is None or last is None or t <= last
 
 
 class LocalCopy:
@@ -1232,6 +1285,12 @@ class Peers:
         return cls._fresh(cls.mesh.get((callsign or "").lower())) or cls._fresh(cls.mesh_uid.get(uid or ""))
 
     @classmethod
+    def moved_to_server(cls, d):
+        """A mesh phone heard on the server more recently than on the mesh (it moved over)."""
+        s = cls.server_uid.get(d.get("uid", ""))
+        return bool(s and s["ts"] > d["ts"])
+
+    @classmethod
     def find_server(cls, callsign=None, uid=None):
         return cls._fresh(cls.server.get((callsign or "").lower())) or cls._fresh(cls.server_uid.get(uid or ""))
 
@@ -1260,6 +1319,15 @@ def point_contact_at(data, ep):
     c = CONTACT_RE.search(data)
     if c:
         return data[:c.end()] + b' endpoint="' + ep + b'"' + data[c.end():]
+    return data
+
+
+def server_endpoint(data):
+    """A mesh phone's position report, as the server sees it: contact endpoint "*:-1:stcp" (reach me through the
+    server) instead of its mesh IP, which nobody on the server side can reach. Only a real IP endpoint is changed."""
+    m = EP_RE.search(data)
+    if m and MESH_EP_RE.match(m.group(2)):
+        return data[:m.start(2)] + b"*:-1:stcp" + data[m.end(2):]
     return data
 
 
@@ -1322,8 +1390,17 @@ class DMRelay:
 
     async def _one(self, ev, peer):
         mt = TYPE_RE.search(ev)
+        if mt and mt.group(1).startswith(b"b-f-t-r"):
+            if FileRelay.instance is not None:    # a picture/package for someone on the server
+                FileRelay.instance.offer(ev, peer[0] if peer else "")
+            return
+        if mt and mt.group(1).startswith(b"b-f-t-a"):
+            out = FileRelay.instance.ack_up(ev) if FileRelay.instance is not None else None
+            if out is not None:                   # a mesh phone got a file from the server: tell the sender
+                await self.tx_queue.put(out)
+            return
         if not mt or not mt.group(1).startswith(CHAT_PREFIX):
-            return                                # only direct chat is relayed
+            return                                # only direct chat (and file notices, above) is relayed
         mu = EVENT_UID_RE.search(ev)
         if mu:                                    # iTAK sends each DM twice over UDP: relay it once
             now = time.monotonic()
@@ -1424,6 +1501,645 @@ async def deliver_to_mesh(target, data):
         return str(exc) or exc.__class__.__name__
 
 
+FILESHARE_RE = re.compile(rb'<fileshare\s[^<>]*>')
+ACKREQ_RE = re.compile(rb'<ackrequest\s[^<>]*>(?:\s*</ackrequest>)?')
+HASH_IN_URL_RE = re.compile(r"(?:/metadata/|[?&]hash=)([0-9a-fA-F]{64})")
+
+
+def tag_attr(tag, name):
+    """One attribute of one XML tag (bytes in, str out, entities undone), or ''."""
+    m = re.search(rb'\s' + name.encode() + rb'\s*=\s*(["\'])(.*?)\1', tag, re.S)
+    if not m:
+        return ""
+    v = m.group(2).decode(errors="replace")
+    return v.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&")
+
+
+def tls_context(cfg):
+    """An ssl context with the deck's own certificate (the PYTAK_TLS_ lines), for the server's file API. Built the
+    way PyTAK builds its own (so whatever works for the CoT link works here): no TLS 1.0/1.1, and no "strict"
+    certificate checks a newer Python would add, which many TAK server CAs don't meet."""
+    import ssl
+    ca = (cfg.get("PYTAK_TLS_CLIENT_CAFILE") or "").strip() or None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
+    if ca:
+        ctx.load_verify_locations(ca)
+    else:
+        ctx.load_default_certs()
+    cert, key = (cfg.get("PYTAK_TLS_CLIENT_CERT") or "").strip(), (cfg.get("PYTAK_TLS_CLIENT_KEY") or "").strip()
+    if cert:
+        pw = (cfg.get("PYTAK_TLS_CLIENT_PASSWORD") or "").replace("%%", "%") or None
+        ctx.load_cert_chain(cert, key or None, pw)
+    if (cfg.get("PYTAK_TLS_DONT_CHECK_HOSTNAME") or "").strip().lower() in ("1", "true", "yes", "on"):
+        ctx.check_hostname = False
+    if (cfg.get("PYTAK_TLS_DONT_VERIFY") or "").strip().lower() in ("1", "true", "yes", "on"):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def marti_base(cfg):
+    """The server's file API: MARTI_URL, or https://<COT_URL host>:8443 (what ATAK uses)."""
+    v = (cfg.get("MARTI_URL") or "").strip().rstrip("/")
+    if v:
+        return v
+    host = urlparse(cfg.get("COT_URL", "")).hostname or ""
+    return "https://%s:8443" % host if host else ""
+
+
+class FileRelay:
+    """Pictures, data packages and KML/KMZ a mesh phone shares with people on the server.
+
+    ATAK doesn't send the file itself: it sends a small notice (b-f-t-r) with a link to the file on the phone
+    (http://<phone>:8080/getfile...). Server people can't reach that link, so the deck does what ATAK does with a
+    server: it downloads the file over the mesh (up to FILE_MAX_MB, only FILE_TYPES), checks its SHA-256, uploads it
+    to the server's file API with the deck's certificate, and sends the notice on with the link changed to the
+    server's copy. One file at a time, in order. The phone gets a delivery receipt (b-f-t-a) from the deck, or a
+    failure with the reason. A phone can't say which server person a file is for (they all reach it through the
+    deck), so the server gets it for everyone. Problems show in Ops (fault area "files"); nothing else is shown.
+
+    The other way (server -> mesh) is the mirror image: a notice from the server links to the server's copy, which
+    mesh phones can't reach. The deck downloads it with its certificate, keeps it in a small cache (FILE_CACHE_HOURS,
+    FILE_CACHE_MB), serves it on its own mesh address (FILE_PORT) and hands the notice, with the link changed to the
+    deck, to the mesh phone(s) it is addressed to (all mesh phones if it isn't addressed). A mesh phone's receipt
+    comes back to the deck (it reaches server people through the deck) and goes on to the sender. Problems: fault
+    area "files_down".
+    """
+    instance = None
+    DONE_KEEP = 600.0
+
+    def __init__(self, cfg, tx_queue):
+        self.cfg = cfg
+        self.tx_queue = tx_queue
+        self.on = (cfg.get("FILES", "on") or "").strip().lower() not in ("0", "off", "no", "false")
+        self.max_bytes = int(float(cfg.get("FILE_MAX_MB", "5")) * 1024 * 1024)
+        self.types = tuple("." + t.strip().lower().lstrip(".") for t in
+                           cfg.get("FILE_TYPES", "zip,jpg,jpeg,png,kml,kmz").split(",") if t.strip())
+        self.marti = marti_base(cfg)
+        self.ctx = None
+        u = own_uid(cfg)
+        self.uid = u.decode(errors="replace") if isinstance(u, bytes) else str(u)
+        self.q = None
+        self.jobs = {}            # (sender uid, sha256) -> job
+        self.up = self.refused = self.failed = 0
+        self.down = self.down_refused = self.down_failed = 0
+        self.host = (cfg.get("PYTAK_MULTICAST_LOCAL_ADDR") or "").strip()
+        self.port = int(cfg.get("FILE_PORT", "8098"))
+        st = cfg.get("STATUS_FILE", "~/bridge_status.json").strip()
+        base = os.path.dirname(os.path.expanduser(st)) if st.lower() not in ("off", "0", "no", "") else \
+            os.path.expanduser("~")
+        self.cache_dir = os.path.expanduser((cfg.get("FILE_CACHE") or "").strip() or os.path.join(base, "file_cache"))
+        self.cache_hours = max(0.1, float(cfg.get("FILE_CACHE_HOURS", "12")))
+        self.cache_bytes = int(float(cfg.get("FILE_CACHE_MB", "200")) * 1024 * 1024)
+        self.cache = {}           # sha256 -> {"path", "name", "size", "ts"}
+        self.down_acks = {}       # receipt uid -> (sender uid, sender callsign, time): mesh receipts back to the sender
+        if self.on and not self.marti:
+            log.warning("Files: no server address (COT_URL or MARTI_URL); files from mesh phones are not passed on")
+            self.on = False
+        FileRelay.instance = self
+
+    # -- the notice
+    def offer(self, ev, peer_ip):
+        """A file notice from a mesh phone (b-f-t-r). Never forwarded as it is: its link only works on the mesh."""
+        if not self.on or self.q is None:
+            return
+        tag = FILESHARE_RE.search(ev)
+        if not tag:
+            return
+        t = tag.group(0)
+        f = {k: tag_attr(t, k) for k in ("filename", "name", "senderUrl", "sha256", "sizeInBytes", "senderUid",
+                                         "senderCallsign", "peerHosted")}
+        ar = ACKREQ_RE.search(ev)
+        ack = tag_attr(ar.group(0), "uid") if ar else ""
+        f["sha256"] = f["sha256"].lower()
+        who = f["senderCallsign"] or f["senderUid"] or peer_ip or "?"
+        label = "%s from %s" % (os.path.basename(f["filename"] or f["name"] or "file"), who)
+        now = time.time()
+        for k in [k for k, j in self.jobs.items() if j["state"] in ("done", "failed") and now - j["ts"] > self.DONE_KEEP]:
+            del self.jobs[k]
+        key = (f["senderUid"], f["sha256"])
+        job = self.jobs.get(key)
+        if job:                                   # the same file again (one copy per server person): one upload
+            if ack:
+                job["acks"].append(ack)
+            if job["state"] == "done":
+                self._ack_soon(job, True, "")
+            elif job["state"] == "failed":
+                self._ack_soon(job, False, job["reason"])
+            return
+        job = {"f": f, "ev": ev, "peer": peer_ip, "acks": [ack] if ack else [], "state": "queued", "ts": now,
+               "label": label, "reason": ""}
+        why = self._check(f)
+        if why:
+            self.refused += 1
+            self._fail(job, why)
+            return
+        self.jobs[key] = job
+        try:
+            self.q.put_nowait(key)
+        except asyncio.QueueFull:
+            self._fail(job, "too many files waiting; send it again later")
+
+    def _check(self, f):
+        if not (f["senderUrl"] and f["sha256"] and f["senderUid"]):
+            return "incomplete file notice"
+        if not re.fullmatch(r"[0-9a-f]{64}", f["sha256"]):
+            return "bad SHA-256 in the notice"
+        if not f["senderUrl"].lower().startswith(("http://", "https://")):
+            return "unsupported link"
+        try:
+            size = int(f["sizeInBytes"] or 0)
+        except ValueError:
+            size = 0
+        if size > self.max_bytes:
+            return "too big: %.1f MB (limit %g MB)" % (size / 1048576.0, self.max_bytes / 1048576.0)
+        name = os.path.basename(f["filename"] or f["name"] or "").lower()
+        ext = os.path.splitext(name)[1]
+        if ".zip" in self.types and (not ext or re.fullmatch(r"\.\d+", ext) or "missionpackage" in name):
+            f["_need_zip"] = "1"                  # iTAK's package names ("server test", "Mom.MissionPackage.1"):
+            return ""                             # allowed only if it IS a zip (checked after download)
+        if not name.endswith(self.types):
+            return "file type not passed on (%s); allowed: %s" % (name or "no name", " ".join(self.types))
+        return ""
+
+    @staticmethod
+    def _zip_ok(f, data):
+        """A file with no extension is only passed on if it is a data package (a zip)."""
+        if f.get("_need_zip") and not data.startswith(b"PK\x03\x04"):
+            raise RuntimeError("named like a data package, but not a data package (zip)")
+
+    def _fail(self, job, why):
+        job["state"], job["reason"], job["ts"] = "failed", why, time.time()
+        self.failed += 1
+        Faults.note("files", RuntimeError("%s: %s" % (job["label"], why)))
+        log.warning("Files: %s not passed to the server: %s", job["label"], why)
+        self._ack_soon(job, False, why)
+
+    # -- the work, one file at a time
+    async def run(self, _=-1):
+        self.q = asyncio.Queue(maxsize=int(self.cfg.get("FILE_QUEUE", "20")))
+        if self.on:
+            log.info("Files ON: pictures, data packages and overlays between mesh phones and the server (%s, max %g MB, "
+                     "%s; mesh side http://%s:%d)", self.marti, self.max_bytes / 1048576.0, " ".join(self.types),
+                     self.host, self.port)
+            self._cache_load()
+            asyncio.ensure_future(self._serve())
+        while True:
+            key = await self.q.get()
+            job = self.jobs.get(key)
+            if job is None:
+                continue
+            job["state"] = "running"
+            if job.get("dir") == "down":
+                await self._run_down(job)
+                continue
+            try:
+                data = await asyncio.wait_for(asyncio.to_thread(self._fetch, job), 180)
+                self._zip_ok(job["f"], data)
+                url = await asyncio.wait_for(asyncio.to_thread(self._upload, job, data), 180)
+                fix = await asyncio.wait_for(asyncio.to_thread(self._server_copy, job, url), 180)
+                await self.tx_queue.put(self._server_notice(job, url, fix))
+                job["state"], job["ts"] = "done", time.time()
+                self.up += 1
+                Stats.note("up", "other")
+                log.info("Files: %s (%d bytes) -> server", job["label"], len(data))
+                self._ack_soon(job, True, "")
+            except Exception as exc:              # any failure: shown in Ops, the phone is told
+                self._fail(job, (str(exc) or exc.__class__.__name__)[:160])
+
+    def _fetch(self, job):
+        """Download from the phone over the mesh: its link, or the same link at the address it came from.
+        A phone serving its own file over https (ATAK's secure file sharing, port 8443) uses its own self-signed
+        certificate; like ATAK itself, the deck doesn't check that certificate for a phone-hosted (peerHosted) file.
+        The SHA-256 from the notice is what proves the file is the one that was sent."""
+        import hashlib, ssl, urllib.request
+        f, urls = job["f"], [job["f"]["senderUrl"]]
+        ctx = None
+        if f["senderUrl"].lower().startswith("https://"):
+            if f.get("peerHosted", "").lower() == "true":
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            else:
+                if self.ctx is None:
+                    self.ctx = tls_context(self.cfg)
+                ctx = self.ctx
+        if job["peer"]:
+            u = urlparse(f["senderUrl"])
+            alt = u._replace(netloc="%s%s" % (job["peer"], (":%d" % u.port) if u.port else "")).geturl()
+            if alt not in urls:
+                urls.append(alt)
+        last = None
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=20, context=ctx) as r:
+                    data = r.read(self.max_bytes + 1)
+                if len(data) > self.max_bytes:
+                    raise RuntimeError("too big (over %g MB)" % (self.max_bytes / 1048576.0))
+                if hashlib.sha256(data).hexdigest() != f["sha256"]:
+                    raise RuntimeError("download didn't match its SHA-256")
+                return data
+            except Exception as exc:
+                last = exc
+        raise RuntimeError("couldn't download it from the phone: %s" % last)
+
+    def _upload(self, job, data):
+        """Upload the way ATAK does (POST /Marti/sync/missionupload, field "assetfile"). Returns the download link."""
+        import urllib.request, urllib.parse, uuid as _uuid
+        f = job["f"]
+        if self.ctx is None and self.marti.startswith("https"):
+            self.ctx = tls_context(self.cfg)
+        name = re.sub(r'[\\/:*?"<>|\r\n]', "_", os.path.basename(f["filename"] or f["name"] or "file")) or "file"
+        if f.get("_need_zip"):
+            name += ".zip"                        # a data package named without an extension
+        q = urllib.parse.urlencode({"hash": f["sha256"], "filename": name, "creatorUid": f["senderUid"]})
+        b = "----tmt%s" % _uuid.uuid4().hex
+        ctype = {".zip": "application/x-zip-compressed", ".kml": "application/vnd.google-earth.kml+xml",
+                 ".kmz": "application/vnd.google-earth.kmz", ".png": "image/png"}.get(os.path.splitext(name)[1].lower(),
+                                                                                   "image/jpeg" if name.lower().endswith((".jpg", ".jpeg")) else "application/octet-stream")
+        body = (("--%s\r\nContent-Disposition: form-data; name=\"assetfile\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+                 % (b, name, ctype)).encode() + data + ("\r\n--%s--\r\n" % b).encode())
+        req = urllib.request.Request(self.marti + "/Marti/sync/missionupload?" + q, data=body, method="POST",
+                                     headers={"Content-Type": "multipart/form-data; boundary=" + b})
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self.ctx) as r:
+                reply = r.read(4096).decode(errors="replace").strip()
+        except Exception as exc:
+            raise RuntimeError("upload to the server failed: %s" % exc)
+        try:                                       # private, like ATAK's sends to people (best effort)
+            t = urllib.request.Request(self.marti + "/Marti/api/sync/metadata/%s/tool" % f["sha256"], data=b"private",
+                                       method="PUT", headers={"Content-Type": "text/plain"})
+            urllib.request.urlopen(t, timeout=15, context=self.ctx).close()
+        except Exception:
+            pass
+        if reply.lower().startswith(("http://", "https://")) and len(reply) < 2000 and not any(c in reply for c in ' <>"'):
+            return reply
+        return self.marti + "/Marti/sync/content?hash=" + f["sha256"]
+
+    def _server_copy(self, job, url):
+        """A bare picture or KML isn't stored as sent: the server wraps it in a data package (.zip) with its own
+        SHA-256 and size. If the link the server gave names another hash, fetch that copy once, check it, and
+        return what the notice must say instead ({} = the server kept the file as sent)."""
+        import hashlib, urllib.request
+        m = HASH_IN_URL_RE.search(url)
+        if not m or m.group(1).lower() == job["f"]["sha256"]:
+            return {}
+        want = m.group(1).lower()
+        if self.ctx is None and url.lower().startswith("https"):
+            self.ctx = tls_context(self.cfg)
+        try:
+            with urllib.request.urlopen(url, timeout=60, context=self.ctx if url.lower().startswith("https") else None) as r:
+                data = r.read(2 * self.max_bytes + 65536)
+        except Exception as exc:
+            raise RuntimeError("the server re-packaged it, but its copy couldn't be read: %s" % exc)
+        if hashlib.sha256(data).hexdigest() != want:
+            raise RuntimeError("the server's re-packaged copy didn't match its own SHA-256")
+        base = os.path.splitext(os.path.basename(job["f"]["filename"] or job["f"]["name"] or "file"))[0]
+        base = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._") or "file"
+        log.info("Files: the server re-packaged %s as %s.zip (%d bytes)", job["label"], base, len(data))
+        return {"sha256": want, "sizeInBytes": str(len(data)), "filename": base + ".zip"}
+
+    @staticmethod
+    def _set_attr(tag, name, value):
+        new = b" " + name.encode() + b"=" + quoteattr(value).encode()
+        pat = rb'\s' + name.encode() + rb'\s*=\s*(["\']).*?\1'
+        if re.search(pat, tag, re.S):
+            return re.sub(pat, lambda _m: new, tag, count=1, flags=re.S)
+        return tag[:-2] + new + b"/>" if tag.endswith(b"/>") else tag[:-1] + new + b">"
+
+    def _server_notice(self, job, url, fix=None):
+        """The phone's notice with the link pointing at the server's copy (and, if the server re-packaged the file,
+        that copy's hash, size and .zip name); no receipt asked (the deck gave it)."""
+        ev = job["ev"]
+        tag = FILESHARE_RE.search(ev)
+        t = tag.group(0)
+        t2 = self._set_attr(t, "senderUrl", url)
+        for k, v in (fix or {}).items():
+            t2 = self._set_attr(t2, k, v)
+        t2 = re.sub(rb'\speerHosted\s*=\s*(["\']).*?\1', b"", t2, flags=re.S)
+        ev = ev[:tag.start()] + t2 + ev[tag.end():]
+        return ACKREQ_RE.sub(b"", ev)
+
+    # -- server -> mesh
+    def offer_down(self, ev):
+        """A file notice from the server. Never put on the mesh as it is: its link is the server's."""
+        if not self.on or self.q is None:
+            return
+        tag = FILESHARE_RE.search(ev)
+        if not tag:
+            return
+        t = tag.group(0)
+        f = {k: tag_attr(t, k) for k in ("filename", "name", "senderUrl", "sha256", "sizeInBytes", "senderUid",
+                                         "senderCallsign", "peerHosted")}
+        f["sha256"] = f["sha256"].lower()
+        key = (f["senderUid"], f["sha256"])
+        what = "%s from %s" % (os.path.basename(f["filename"] or f["name"] or "file"),
+                               f["senderCallsign"] or f["senderUid"] or "server")
+        up = self.jobs.get(key)
+        if up is not None and up.get("dir") != "down":
+            log.info("Files: %s: not for the mesh (the deck carried it up from the mesh)", what)
+            return                                # our own upload coming back: it came from the mesh
+        if Shared.from_mesh(ev, f["senderUid"].encode()):
+            log.info("Files: %s: not for the mesh (sent from the mesh)", what)
+            return                                # sent by a mesh phone: not for the mesh again
+        names = [m.decode(errors="replace") for m in DEST_CS_RE.findall(ev)]
+        uids = [m.decode(errors="replace") for m in DEST_UID_RE.findall(ev)]
+        if names or uids:
+            targets = []
+            for n in names:
+                d = Peers.find_mesh(callsign=n)
+                if d and d not in targets:
+                    targets.append(d)
+            for u in uids:
+                d = Peers.find_mesh(uid=u)
+                if d and d not in targets:
+                    targets.append(d)
+            if not targets:
+                log.info("Files: %s: not for the mesh (for %s, not heard on the mesh)", what, ",".join(names + uids))
+                return                            # addressed to people who aren't on the mesh
+        else:
+            targets = [d for d in list(Peers.mesh_uid.values()) if Peers._fresh(d)   # for everyone: all mesh phones,
+                       and not Peers.moved_to_server(d)]                             # not ones now on the server
+            if not targets:
+                log.info("Files: %s: not for the mesh (sent to everyone, no mesh phones heard)", what)
+                return
+        who = f["senderCallsign"] or f["senderUid"] or "server"
+        label = "%s from %s" % (os.path.basename(f["filename"] or f["name"] or "file"), who)
+        ar = ACKREQ_RE.search(ev)
+        if ar:
+            a = tag_attr(ar.group(0), "uid")
+            if a:
+                self.down_acks[a] = (f["senderUid"], f["senderCallsign"], time.time())
+                if len(self.down_acks) > 2000:
+                    for k in sorted(self.down_acks, key=lambda k: self.down_acks[k][2])[:500]:
+                        del self.down_acks[k]
+        job = self.jobs.get(key)
+        now = time.time()
+        if job and job.get("dir") == "down" and job["state"] != "failed":
+            new = [d for d in targets if d not in job["targets"]]
+            job["targets"] += new
+            if job["state"] == "done" and new:    # already in the cache: just tell the new people
+                asyncio.ensure_future(self._deliver_down(job, new))
+            return
+        job = {"dir": "down", "f": f, "ev": ev, "targets": targets, "state": "queued", "ts": now, "label": label,
+               "reason": "", "acks": [], "peer": ""}
+        why = self._check(f)
+        if why:
+            self.down_refused += 1
+            self._fail_down(job, why)
+            return
+        self.jobs[key] = job
+        try:
+            self.q.put_nowait(key)
+        except asyncio.QueueFull:
+            self._fail_down(job, "too many files waiting")
+
+    def _fail_down(self, job, why):
+        job["state"], job["reason"], job["ts"] = "failed", why, time.time()
+        self.down_failed += 1
+        Faults.note("files_down", RuntimeError("%s: %s" % (job["label"], why)))
+        log.warning("Files: %s not passed to the mesh: %s", job["label"], why)
+
+    async def _run_down(self, job):
+        try:
+            if job["f"]["sha256"] not in self.cache:
+                data = await asyncio.wait_for(asyncio.to_thread(self._fetch_server, job), 180)
+                self._zip_ok(job["f"], data)
+                await asyncio.to_thread(self._cache_put, job, data)
+            job["state"], job["ts"] = "done", time.time()
+            self.down += 1
+            Stats.note("down", "other")
+            log.info("Files: %s -> mesh (%d phone(s))", job["label"], len(job["targets"]))
+            await self._deliver_down(job, list(job["targets"]))
+        except Exception as exc:                  # shown in Ops; the mesh phones just never get the notice
+            self._fail_down(job, (str(exc) or exc.__class__.__name__)[:160])
+
+    def _fetch_server(self, job):
+        """Download the server's copy with the deck's certificate: its link, or the same link on the server
+        address the bridge uses (a link can name a host only the sender's network knows).
+        The copy must match the notice's SHA-256, or else the SHA-256 the link itself names (content?hash=... /
+        metadata/<hash>): iTAK's notice can carry a different hash than the copy the server stored and named in the
+        link. The link came from the server over the deck's own TLS connection, so its hash is the one to trust;
+        the notice is then corrected to it. Matching neither = refused, with both hashes in the error."""
+        import gzip, hashlib, urllib.request
+        f = job["f"]
+        if not f["senderUrl"].lower().startswith(("http://", "https://")):
+            raise RuntimeError("unsupported link")
+        urls = [f["senderUrl"]]
+        mine = urlparse(self.marti)
+        u = urlparse(f["senderUrl"])
+        if mine.hostname and u.hostname != mine.hostname:
+            urls.append(u._replace(netloc="%s%s" % (mine.hostname, (":%d" % u.port) if u.port else "")).geturl())
+        # the standard TAK file API on the server the bridge uses, by hash: works whatever link the sender's app wrote
+        # (iTAK's link isn't always one the deck can use)
+        lm = HASH_IN_URL_RE.search(f["senderUrl"])
+        for h in [f["sha256"]] + ([lm.group(1).lower()] if lm else []):
+            std = "%s/Marti/sync/content?hash=%s" % (self.marti, h)
+            if std not in urls:
+                urls.append(std)
+        last, tried = None, []
+        for url in urls:
+            try:
+                ctx = None
+                if url.lower().startswith("https"):
+                    if self.ctx is None:
+                        self.ctx = tls_context(self.cfg)
+                    ctx = self.ctx
+                with urllib.request.urlopen(url, timeout=60, context=ctx) as r:
+                    data = r.read(self.max_bytes + 1)
+                    ctype = r.headers.get("Content-Type", "?")
+                    if (r.headers.get("Content-Encoding") or "").lower() == "gzip":
+                        data = gzip.decompress(data)
+                if ctype.lower().startswith("text/html"):
+                    raise RuntimeError("a web page (%d bytes), not the file" % len(data))
+                if len(data) > self.max_bytes:
+                    raise RuntimeError("too big (over %g MB)" % (self.max_bytes / 1048576.0))
+                got = hashlib.sha256(data).hexdigest()
+                if got == f["sha256"]:
+                    return data
+                m = HASH_IN_URL_RE.search(f["senderUrl"])
+                if m and got == m.group(1).lower():
+                    log.info("Files: %s: the notice's SHA-256 (%s...) isn't the server copy's; the link names %s..., "
+                             "which matches: using the server's", job["label"], f["sha256"][:12], got[:12])
+                    job["fix"] = {"sha256": got, "sizeInBytes": str(len(data))}
+                    f["sha256"] = got
+                    return data
+                raise RuntimeError("download didn't match its SHA-256 (notice %s..., link %s..., got %s..., %d bytes, %s)"
+                                   % (f["sha256"][:12], (m.group(1)[:12] if m else "none"), got[:12], len(data), ctype))
+            except Exception as exc:
+                last = exc
+                tried.append("%s -> %s" % (urlparse(url).path + ("?" + urlparse(url).query[:20] if urlparse(url).query else ""),
+                                           str(exc)[:90]))
+        log.info("Files: %s: tried %s", job["label"], " | ".join(tried))
+        raise RuntimeError("couldn't download it from the server: %s" % last)
+
+    # cache: <sha256> files in FILE_CACHE, gone after FILE_CACHE_HOURS, oldest first past FILE_CACHE_MB
+    def _cache_load(self):
+        try:
+            os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
+            for n in os.listdir(self.cache_dir):
+                p = os.path.join(self.cache_dir, n)
+                if re.fullmatch(r"[0-9a-f]{64}", n) and os.path.isfile(p):
+                    self.cache[n] = {"path": p, "name": n + ".zip", "size": os.path.getsize(p),
+                                     "ts": os.path.getmtime(p)}
+                elif n.endswith(".tmp"):
+                    os.remove(p)
+            self._cache_trim()
+        except OSError as exc:
+            Faults.note("files_down", RuntimeError("file cache %s: %s" % (self.cache_dir, exc)))
+
+    def _cache_put(self, job, data):
+        f = job["f"]
+        os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
+        p = os.path.join(self.cache_dir, f["sha256"])
+        with open(p + ".tmp", "wb") as fh:
+            fh.write(data)
+        os.replace(p + ".tmp", p)
+        name = re.sub(r'[\\/:*?"<>|\r\n]', "_", os.path.basename(f["filename"] or f["name"] or "")) or (f["sha256"] + ".zip")
+        if f.get("_need_zip"):
+            name += ".zip"
+        self.cache[f["sha256"]] = {"path": p, "name": name, "size": len(data), "ts": time.time()}
+        self._cache_trim()
+
+    def _cache_trim(self):
+        now = time.time()
+        for h, c in sorted(self.cache.items(), key=lambda kv: kv[1]["ts"]):
+            over = sum(x["size"] for x in self.cache.values()) > self.cache_bytes
+            if now - c["ts"] > self.cache_hours * 3600 or over:
+                try:
+                    os.remove(c["path"])
+                except OSError:
+                    pass
+                del self.cache[h]
+
+    async def _deliver_down(self, job, targets):
+        """The notice to each mesh phone, with the link pointing at the deck."""
+        f = job["f"]
+        c = self.cache.get(f["sha256"])
+        if c is None:
+            return
+        from urllib.parse import quote
+        url = "http://%s:%d/getfile?hash=%s&name=%s" % (self.host, self.port, f["sha256"], quote(c["name"]))
+        ev = job["ev"]
+        tag = FILESHARE_RE.search(ev)
+        t2 = self._set_attr(tag.group(0), "senderUrl", url)
+        for k, v in (job.get("fix") or {}).items():   # the server copy's hash and size (see _fetch_server)
+            t2 = self._set_attr(t2, k, v)
+        t2 = re.sub(rb'\speerHosted\s*=\s*(["\']).*?\1', b"", t2, flags=re.S)
+        out = ev[:tag.start()] + t2 + ev[tag.end():]
+        for d in targets:
+            err = await deliver_to_mesh(d, out)    # deliver_to_mesh strips the server's <marti> addressing
+            if err:
+                Faults.note("files_down", RuntimeError("%s: can't reach %s: %s" % (job["label"], d.get("cs", "?"), err)))
+
+    async def _serve(self):
+        """The deck's file server on its mesh address: GET /getfile?hash=<sha256> for files in the cache only."""
+        while True:
+            try:
+                server = await asyncio.start_server(self._http, self.host, self.port)
+                log.info("Files: serving cached server files to the mesh on %s:%d", self.host, self.port)
+                self._told = False
+                async with server:
+                    await server.serve_forever()
+            except OSError as exc:
+                if not getattr(self, "_told", False):
+                    log.warning("Files: port %s:%d unavailable (%s); retrying every 5 s", self.host, self.port, exc)
+                    self._told = True
+                await asyncio.sleep(5)
+
+    async def _http(self, reader, writer):
+        try:
+            line = await asyncio.wait_for(reader.readline(), 10)
+            while True:                            # skip the headers
+                h = await asyncio.wait_for(reader.readline(), 10)
+                if h in (b"\r\n", b"\n", b""):
+                    break
+            parts = line.decode("latin-1", "replace").split()
+            meth, path = (parts[0], parts[1]) if len(parts) >= 2 else ("", "")
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(path).query)
+            h = (q.get("hash") or q.get("file") or [""])[0].lower()
+            c = self.cache.get(h) if re.fullmatch(r"[0-9a-f]{64}", h) else None
+            if meth not in ("GET", "HEAD") or not urlparse(path).path.startswith("/getfile") or c is None \
+                    or not os.path.exists(c["path"]):
+                writer.write(b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
+            writer.write(("HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n"
+                          "Content-Disposition: attachment; filename=%s\r\nConnection: close\r\n\r\n"
+                          % (c["size"], quoteattr(c["name"]))).encode())
+            if meth == "GET":
+                with open(c["path"], "rb") as fh:
+                    while True:
+                        b = fh.read(65536)
+                        if not b:
+                            break
+                        writer.write(b)
+                        await writer.drain()
+            await writer.drain()
+        except (OSError, asyncio.TimeoutError, ValueError):
+            pass
+        finally:
+            writer.close()
+
+    def ack_up(self, ev):
+        """A mesh phone's receipt (b-f-t-a) for a file from the server: on to the server person who sent it."""
+        r = re.search(rb'<ackresponse\s[^<>]*>', ev)
+        a = tag_attr(r.group(0), "uid") if r else ""
+        info = self.down_acks.get(a)
+        if not info:
+            return None
+        out = add_dest(ev, info[1]) if info[1] else None
+        if out is not None and info[0] and not DEST_UID_RE.search(out):
+            i = out.rfind(b"</marti>")
+            if i > 0:
+                out = out[:i] + b"<dest uid=" + quoteattr(info[0]).encode() + b"/>" + out[i:]
+        return out
+
+    # -- receipts back to the phone
+    def _ack_soon(self, job, ok, reason):
+        acks, job["acks"] = job["acks"], []
+        if acks:
+            asyncio.ensure_future(self._ack_safe(job, acks, ok, reason))
+
+    async def _ack_safe(self, job, acks, ok, reason):
+        try:
+            await self._ack(job, acks, ok, reason)
+        except Exception as exc:                  # a receipt that can't be built or sent: shown, never fatal
+            Faults.note("files", RuntimeError("receipt for %s: %s" % (job["label"], exc)))
+
+    async def _ack(self, job, acks, ok, reason):
+        f = job["f"]
+        target = Peers.find_mesh(uid=f["senderUid"]) or (
+            {"ip": job["peer"], "port": 4242, "proto": "tcp"} if job["peer"] else None)
+        if target is None:
+            return
+        now = datetime.now(timezone.utc)
+        t0 = now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (now.microsecond // 1000)
+        st = datetime.fromtimestamp(now.timestamp() + 60, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for a in acks:
+            xml = ('<event version="2.0" uid=%s type="b-f-t-a" how="m-g" time="%s" start="%s" stale="%s">'
+                   '<point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/><detail>'
+                   '<ackresponse uid=%s senderUid=%s success="%s" tag=%s reason=%s sha256=%s sizeInBytes=%s/>'
+                   '</detail></event>') % (
+                quoteattr("FileAck-%s-%s" % (self.uid, a)), t0, t0, st, quoteattr(a), quoteattr(self.uid),
+                "true" if ok else "false", quoteattr(f["name"] or f["filename"]),
+                quoteattr("" if ok else "deck: " + reason), quoteattr(f["sha256"]), quoteattr(f["sizeInBytes"] or "0"))
+            err = await deliver_to_mesh(target, xml.encode())
+            if err:
+                log.info("Files: receipt to %s failed: %s", f["senderCallsign"] or target["ip"], err)
+
+    @classmethod
+    def status(cls):
+        s = cls.instance
+        if s is None or not s.on:
+            return {"enabled": False}
+        return {"enabled": True, "sent": s.up, "refused": s.refused, "failed": s.failed,
+                "down": s.down, "down_refused": s.down_refused, "down_failed": s.down_failed,
+                "cached": len(s.cache), "waiting": s.q.qsize() if s.q else 0}
+
+
 class Identity:
     """Re-send the bridge identity every IDENTIFY_INTERVAL seconds. Never raises.
     With GPS: every GPS_INTERVAL seconds while there is a fix (DECK moves on server maps); once when
@@ -1468,6 +2184,10 @@ class MeshToServer:
         self.sent = 0
         self.skipped = 0
         self.uplink = None
+        # SERVER_ENDPOINT = stcp (default): server people see mesh phones as "reach me through the server", not at a
+        # mesh IP they can't reach. Then their apps send DMs and files through the server (which the deck carries),
+        # instead of trying the phone directly or hosting a file only the mesh can't fetch. keep = pass it unchanged.
+        self.server_ep = (cfg.get("SERVER_ENDPOINT", "stcp") or "").strip().lower() not in ("keep", "off", "0", "no")
 
     async def open_reader(self):
         """Join the mesh group. If the deck's mesh address isn't there yet (node unplugged or off), wait
@@ -1571,6 +2291,10 @@ class MeshToServer:
 
     async def _forward(self, data, addr):
         """One good event from the mesh: on to the server."""
+        if b'type="b-f-t-r' in data[:600]:
+            if FileRelay.instance is not None:    # its link only works on the mesh: the deck carries the file
+                FileRelay.instance.offer(data, addr[0] if addr else "")
+            return
         if self.key == "MESH_CHAT_URL":
             log.info("Chat datagram from %s (%d bytes) -> server", addr[0], len(data))
         if self._is_dupe(data):
@@ -1583,10 +2307,12 @@ class MeshToServer:
             if uid == self.my_uid:
                 return            # Chat's own mesh position report: the server knows the deck
                                     # from the bridge identity (reach-me-via-server), keep it that way
-            Shared.mark(Shared.mesh_uids, uid)
+            Shared.saw_mesh(data, uid)
         if b"<contact" in data and b'type="a-' in data:
             Peers.saw_mesh(data)             # remember this phone's DM address
             Peers.saw_position(data, "mesh")
+            if self.server_ep:
+                data = server_endpoint(data)
         Outbox.keep(data)                     # chats are kept on disk until written to the server
         if self.uplink is not None:
             mt1 = TYPE_RE.search(data)
@@ -1609,7 +2335,7 @@ class ServerToMesh:
     """Reads the server stream; optionally puts selected events onto the mesh.
 
     RETURN_PATH turns it on (deck.ini.example sets 1). Only CoT types in RETURN_TYPES (positions, chats, markers,
-    drawings by default), at most RETURN_MAX_PER_SEC, and never for a UID heard on the mesh (no echo).
+    routes, drawings by default), at most RETURN_MAX_PER_SEC, and never for a UID heard on the mesh (no echo).
     """
 
     def __init__(self, cfg, rx_queue):
@@ -1617,7 +2343,7 @@ class ServerToMesh:
         self.enabled = cfg.get("RETURN_PATH", "0").strip().lower() in ("1", "true", "yes", "on")
         Stats.return_enabled = self.enabled
         self.types = tuple(t.strip().encode() for t in
-                           cfg.get("RETURN_TYPES", "a-f-,b-t-f,b-m-p,u-d-").split(",") if t.strip())
+                           cfg.get("RETURN_TYPES", "a-f-,b-t-f,b-m-p,b-m-r,u-d-").split(",") if t.strip())
         self.max_per_sec = float(cfg.get("RETURN_MAX_PER_SEC", "5"))
         url = urlparse(cfg.get("RETURN_URL", "udp://239.2.3.1:6969"))
         self.dest = (url.hostname, url.port)
@@ -1765,6 +2491,10 @@ class ServerToMesh:
                 continue
             Stats.server_rx += 1
             Stats.server_last_rx_ts = time.time()
+            if isinstance(data, (bytes, bytearray)) and b'type="b-f-t-r' in data[:600]:
+                if FileRelay.instance is not None:  # a file for the mesh: the deck carries it (its link is the server's)
+                    FileRelay.instance.offer_down(bytes(data))
+                continue
             if self.dm_relay and isinstance(data, (bytes, bytearray)) and b'type="b-t-f' in data \
                     and (DEST_CS_RE.search(data) or DEST_UID_RE.search(data)) and not self._for_deck(data):
                 await self._dm_down(bytes(data))  # a DM for a mesh phone: to that phone only
@@ -1790,7 +2520,7 @@ class ServerToMesh:
                 continue
             if etype.startswith(CHAT_PREFIX) and self._for_deck(data):
                 continue                          # a direct message to the deck: Chat only, not the mesh
-            if Shared.recent(Shared.mesh_uids, uid):
+            if Shared.from_mesh(data, uid):
                 continue                          # originated on the mesh
             now = time.monotonic()
             if etype.startswith(b"a-") and b"<contact" in data:
@@ -1848,7 +2578,7 @@ class ServerToMesh:
                 await asyncio.sleep(1)
 
     def _send(self, data, etype, uid):
-        if Shared.recent(Shared.mesh_uids, uid):
+        if Shared.from_mesh(data, uid):
             return                                # heard on the mesh while it waited
         if self.sock is None:                     # started without the mesh; try again at most every 3 s
             now = time.monotonic()
@@ -1913,6 +2643,7 @@ class StatusWriter:
     def snapshot(self):
         c = self.cfg
         now = time.time()
+        Outbox.expire()                           # runs with every status write (every few seconds)
         return {
             "schema": 1,
             "pid": os.getpid(),
@@ -1934,7 +2665,8 @@ class StatusWriter:
             "server": {"rx_events": Stats.server_rx, "last_rx_ts": Stats.server_last_rx_ts},
             "per_minute": Stats.per_minute(),
             "boot_id": self.boot_id,
-            "dm_route": DMSelfTest.status(), "outbox": Outbox.status(), "faults": Faults.status(now),
+            "dm_route": DMSelfTest.status(), "outbox": Outbox.status(), "files": FileRelay.status(),
+            "faults": Faults.status(now),
             "link": {"state": Link.state, "reason": Link.reason, "since": Link.connected_ts,
                      "ping_interval": Link.interval, "timeout": Link.timeout,
                      "pings": Link.pings, "pongs": Link.pongs, "answers_pings": Link.pong_seen,
@@ -2097,6 +2829,9 @@ async def main(path):
     tool.add_task(LinkWatch(cfg, tool.tx_queue))
     tool.add_task(DMSelfTest(cfg, tool.tx_queue))
     tool.add_task(ServerToMesh(cfg, tool.rx_queue))
+    files = FileRelay(cfg, tool.tx_queue)
+    if files.on:
+        tool.add_task(files)
     if dm_relay_on(cfg):
         if dm_relay_endpoint(cfg):
             tool.add_task(DMRelay(cfg, tool.tx_queue))

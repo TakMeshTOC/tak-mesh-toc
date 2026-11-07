@@ -200,6 +200,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       case "sending": return ["", "...", "sending"];
       case "held": return ["bad", "HELD", m.error || "waited too long"];
       case "dropped": return ["", "DROPPED", "not sent"];
+      case "expired": return ["", "EXPIRED", m.error || "not sent: waited too long"];
     }
     if (m.dm) {
       if (m.path === "mesh") return m.delivered ? ["ok", "✓✓", "delivered to their phone over the mesh"] : ["", "✓", "sent over the mesh"];
@@ -218,7 +219,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     const pm = PREC.exec(m.text || "");
     const prec = pm ? pm[1].toUpperCase() : "";
     const src = m.mine ? "me" : (m.src === "server" ? "server" : "mesh");
-    r.className = "m src-" + src + (prec ? " p-" + prec.toLowerCase() : "") + (m.status === "dropped" ? " dropped" : "") +
+    r.className = "m src-" + src + (prec ? " p-" + prec.toLowerCase() : "") + (m.status === "dropped" || m.status === "expired" ? " dropped" : "") +
       (fresh && loaded && !m.mine ? " new" : (r.classList.contains("new") ? " new" : ""));
     r.title = src === "me" ? "sent by you" : (src === "server" ? "from the server" : "heard on the mesh");
     r.replaceChildren();
@@ -308,7 +309,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     if (!r.path) { hint("Can't DM " + r.callsign + " yet: no position report heard from them (they need to be on the mesh or the server).", "err"); return; }
     show(r.uid, r.callsign);
   }
-  const mineTexts = () => [...rows.values()].map(r => r._m).filter(m => m && m.mine && m.status !== "dropped").map(m => m.text);
+  const mineTexts = () => [...rows.values()].map(r => r._m).filter(m => m && m.mine && m.status !== "dropped" && m.status !== "expired").map(m => m.text);
 
   // ---------- status, roster
   function pill(id, cls, text, title) { const p = $(id); p.className = "pill " + cls; p.textContent = text; if (title) p.title = title; }
@@ -326,7 +327,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       else pill("psrv", "ok", "SERVER RELAY", "Bridge running");
       const ob = info.outbox || { waiting: 0, held: 0 };
       if (ob.error) pill("pout", "bad", "OUTBOX " + ob.waiting + " · STUCK", "Chat's sender failed: " + ob.error + ". Messages are kept; if this doesn't clear, restart: meshtoc restart");
-      else if (ob.waiting) pill("pout", ob.held ? "bad" : "warn", "OUTBOX " + ob.waiting + (ob.held ? " (" + ob.held + " HELD)" : ""), "Waiting for the mesh. Held = waited too long; SEND or DROP it in the list.");
+      else if (ob.waiting) pill("pout", ob.held ? "bad" : "warn", "OUTBOX " + ob.waiting + (ob.held ? " (" + ob.held + " HELD)" : ""), "Waiting for the mesh. Held = waited too long; SEND or DROP it in the list. Unsent messages expire on their own.");
       else $("pout").className = "pill hide";
       $("rtitle").textContent = "ON NET · " + info.roster.length + "  (" + info.roster_minutes + " MIN)";
       const now = Date.now() / 1000;

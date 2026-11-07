@@ -1,5 +1,109 @@
 # Changes
 
+## 3.1.22: phones that move between the mesh and the server
+- **No 10-minute wait after a phone moves.** The loop guard (anything heard on the mesh in the last 10 min is never
+  sent back to the mesh) also held back a phone that had just moved from the mesh to the server: its new reports and
+  its files didn't reach the mesh, so mesh phones kept its old mesh address and their files to it went nowhere, and
+  its files to mesh phones were dropped. The guard now compares report times: a report newer than anything that
+  phone sent on the mesh is the phone itself, now on the server, and goes through at once. The mesh's own echo
+  (same time) is still never sent back.
+- **Deck Chat: the DM route follows the phone.** ON NET showed "DM·mesh" for up to 10 min after a phone moved to the
+  server; now where it was heard last wins, at its next position report.
+- A file sent to everyone isn't sent to a mesh address of a phone that moved to the server.
+- The log says why a file from the server isn't put on the mesh: "not for the mesh (sent from the mesh)",
+  "(for X, not heard on the mesh)", "(sent to everyone, no mesh phones heard)".
+- Tests: `outbox_test.py` (DM route follows the phone), `file_relay_test.py` (moved phone, loop guard, times).
+
+## 3.1.21: server people reach mesh phones through the server
+- **Mesh phones are shown to the server as "reach me through the server"** (contact endpoint `*:-1:stcp`) instead
+  of their mesh IP, which nobody on the server side can reach. iTAK saw the mesh IP, took the mesh phone for a
+  local peer and offered to host a file itself (`/getFile?file=0...`), which the deck can't reach. Now server apps
+  send files and DMs through the server, which the deck carries. The deck still keeps each phone's real mesh
+  address for delivering to it. `SERVER_ENDPOINT = keep` passes the address unchanged (the old way).
+- **iTAK package names:** "Mom.MissionPackage.1" is passed on like a name with no extension: only if the file
+  really is a data package (zip). Other unknown types (.apk, .docx, ...) are still refused.
+- `file_relay_test.py`: the endpoint as the server sees it, `keep`, and the MissionPackage name.
+
+## 3.1.20: iTAK files to the mesh, take 2
+- **Fix:** the link in iTAK's file notice can lead to a server web page instead of the file (the deck got a 1 KB
+  HTML page). After the notice's link, the deck now also tries the standard TAK download by hash,
+  `/Marti/sync/content?hash=<SHA-256>`, on the server the bridge uses, which is how OpenTAKServer serves stored
+  packages.
+- A web page is never taken for the file ("a web page, not the file"); the next link is tried.
+- When every link fails, the log lists each link path tried and what came back (paths only).
+- `file_relay_test.py`: a link that returns a web page; no copy anywhere.
+
+## 3.1.19: iTAK files to the mesh
+- **Fix:** a file from iTAK to mesh phones was refused ("download didn't match its SHA-256"): iTAK's notice can
+  carry a different SHA-256 than the copy OpenTAKServer stored and names in the download link. The server copy is
+  now accepted when it matches the hash the link names (the link came from the server over the deck's own TLS
+  connection), and the notice to the mesh phone is corrected to that copy's SHA-256 and size so ATAK accepts it.
+  Matching neither is still refused.
+- The error now shows the notice's, the link's and the downloaded SHA-256, the size and the content type.
+- A server reply sent gzip-compressed is unpacked before the check.
+- `file_relay_test.py`: the iTAK case, and the detailed error.
+
+## 3.1.18: iTAK data packages
+- **Fix:** iTAK names a data package without a file extension ("server test" instead of "server test.zip"), so a
+  file from iTAK was refused as "file type not passed on". A file with no extension is now passed on, both ways,
+  when it really is a data package (a zip; checked after download), and uploaded to the server as "<name>.zip".
+  Anything else with no extension is still refused and shown in Ops.
+- README: `~/file_cache/` in "Files on the deck". `link_test.py` cleans the bridge's file_cache folder too.
+- `file_relay_test.py`: an iTAK package with no extension both ways; a non-zip with no extension is refused.
+
+## 3.1.17: files from the server to the field
+- **Pictures, data packages and KML/KMZ from the server reach mesh phones.** The server's notice links to the
+  server's copy, which mesh phones can't reach. The deck downloads it with its certificate (from the link, or the
+  server address the bridge already uses), checks its SHA-256, keeps it in a small cache (`FILE_CACHE_HOURS` 12,
+  `FILE_CACHE_MB` 200, in `file_cache` next to the status file) and serves it on its own mesh address
+  (`FILE_PORT`, 8098; cached files only). The notice goes, with the link changed to the deck and the server's
+  addressing removed, to the mesh phones it was sent to, or to every mesh phone if it was sent to everyone.
+  A mesh phone's receipt goes back to the server person who sent it.
+- Same guardrails as the other way: `FILE_MAX_MB`, `FILE_TYPES`, one file at a time; a file already in the cache
+  goes to more phones without downloading it again; a file that came from the mesh never goes back down.
+  Problems show in Ops only: **"File not passed to the mesh"**.
+- **Fix: bare pictures to the server.** OpenTAKServer stores a lone .jpg/.png/.kml as a new data package with its
+  own SHA-256 and size. The deck now reads that copy once and sends the notice with the server copy's hash, size
+  and .zip name, so receiving phones accept the download.
+- Installer: port 8098 in its "already in use" check; with UFW on, opens 8098/tcp on the mesh port only
+  (uninstall removes it).
+- `file_relay_test.py` (52 checks) covers both directions, the cache, receipts, echo and the re-packaged picture.
+
+## 3.1.16: files from phones with secure file sharing
+- **Fix:** a phone with ATAK's secure file sharing on serves its files over https with its own self-signed
+  certificate, and the deck refused that download ("couldn't download it from the phone ... CERTIFICATE_VERIFY_FAILED").
+  Like ATAK itself, the deck now doesn't check the certificate of a phone-hosted (peerHosted) file; the file's SHA-256
+  from the notice still has to match. Any other https link is still fully checked.
+- `file_relay_test.py`: a phone serving over https on a self-signed certificate; a non-phone https link with a bad
+  certificate is still refused.
+
+## 3.1.15: files from the field, routes to the field
+- **Pictures, data packages and KML/KMZ from mesh phones reach the server.** ATAK shares a file by sending a notice
+  with a link to the phone, which server people can't reach. The deck now does what ATAK does with a server: it
+  downloads the file from the phone over the mesh, checks its SHA-256, uploads it to the server's file API with the
+  deck's certificate (POST /Marti/sync/missionupload, the phone as creator) and passes the notice on with the
+  server's link. The phone gets a delivery receipt from the deck, or a failure with the reason.
+- **Guardrails, in the background:** up to `FILE_MAX_MB` (5), only `FILE_TYPES` (zip, jpg, jpeg, png, kml, kmz), one
+  file at a time, the same file sent to several people uploaded once. A file notice is never passed on with its
+  mesh-only link. Nothing new on screen: a refused or failed file shows in Ops' fault list ("File not passed to the
+  server"). `FILES = off` turns it off; `MARTI_URL` overrides https://<COT_URL host>:8443.
+- **A file from the field reaches everyone on the server:** a phone can't say which server person it picked (they
+  all reach it through the deck). Needs `DM_RELAY = 1`.
+- **Routes cross to the mesh:** `b-m-r` is in the default `RETURN_TYPES`.
+- New test `file_relay_test.py` (fake phone, fake server file API, a real TLS server that wants the deck's
+  certificate). `big_test.py`: a 50 MB package notice is read whole, refused as too big and shown in Ops.
+
+## 3.1.14: old messages expire on their own
+- **Unsent chat expires.** Deck Chat messages still not sent after `OUTBOX_EXPIRE_HOURS` (new, default 12; 0 = never)
+  are marked **EXPIRED**: never sent, struck through in the list, kept in the log, and marked "NOT SENT: expired" in
+  the export. They don't come back after a restart. No new buttons; SEND / DROP on held messages work as before.
+- **The bridge's outbox expires while running.** Chats waiting for the server longer than `OUTBOX_HOURS` (default now
+  12, was 24) are dropped as the bridge runs, not only at its next restart.
+- **Deck Chat runs with python3 -S,** like the bridge: only the bundled libraries, so another protobuf installed on
+  the computer can't break it. Started by hand next to such a copy, Chat now keeps running (TAK Protocol decoding off,
+  with a warning) instead of crashing at start.
+- New test `protobuf_conflict_test.py`; `outbox_test.py`, `durability_test.py` and `install_sim.sh` cover the rest.
+
 ## 3.1.13: failures you can see
 From an audit of every catch-all error handler (53 of them): the ones that could hide a real failure now show it in
 Ops, not only in journalctl. No new features or settings.

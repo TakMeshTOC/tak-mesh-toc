@@ -26,6 +26,7 @@ act $SUDO rm -f "$UNIT_DIR/manet_mesh_bridge.target"
 act $SUDO systemctl daemon-reload
 if command -v ufw >/dev/null 2>&1 && [ "$DRY" != 1 ]; then
   $SUDO ufw status numbered 2>/dev/null | grep -q 'MANET_MESH_BRIDGE voice' && act $SUDO ufw delete allow in on eth0 proto udp to any port 38801:38810
+  $SUDO ufw status numbered 2>/dev/null | grep -q 'TAK MESH TOC files' && act $SUDO ufw delete allow in on eth0 proto tcp to any port 8098
 fi
 echo "== Removing icons and full-screen autostart"
 act rm -f "$APPS/manet-chat.desktop" "$DESK/manet-chat.desktop" "$APPS/manet-dashboard-app.desktop" "$DESK/manet-dashboard-app.desktop" \

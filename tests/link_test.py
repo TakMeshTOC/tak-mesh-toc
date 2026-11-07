@@ -6,6 +6,7 @@
      only a small stale backlog; UP_MIN_INTERVAL = 0 forwards everything like before
   F  return path: 100 server people all reach the mesh, in turn; chats from the server are not starved
 Usage: python3 link_test.py [package dir] [work dir]"""
+import shutil
 import json, os, socket, struct, subprocess, sys, threading, time
 PKG = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W = sys.argv[2] if len(sys.argv) > 2 else "/tmp/mmb_link_test"
@@ -130,7 +131,8 @@ class Bridge:
     def __init__(self, srv, tag, extra=""):
         self.w = W + "/" + tag; os.makedirs(self.w, exist_ok=True)
         for f in os.listdir(self.w):
-            os.remove(os.path.join(self.w, f))
+            p = os.path.join(self.w, f)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)    # the bridge's file_cache folder too
         self.ini = self.w + "/deck.ini"; self.status = self.w + "/status.json"; self.logf = self.w + "/b.log"
         open(self.ini, "w").write(f"""[deck]
 CALLSIGN = DECK

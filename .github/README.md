@@ -5,8 +5,8 @@
 <p align="center">
   <b>A portable TAK operations center for a mesh network.</b><br>
   One small Linux computer joins ATAK and iTAK phones on a mesh radio network to your TAK server:
-  positions, chat, markers, DMs, push-to-talk voice and live video, both ways. The phones on the mesh need no
-  internet, no server account and no certificate.
+  positions, chat, markers, routes, DMs, pictures and data packages, push-to-talk voice and live video, both ways.
+  The phones on the mesh need no internet, no server account and no certificate.
 </p>
 
 <p align="center">
@@ -27,11 +27,16 @@ node) carries that traffic to your TAK server over one TLS link and brings the s
 People on the server see the mesh phones, and the mesh phones see them. Only the deck needs a link to the server;
 if that link drops, the mesh keeps working on its own and the deck holds chats until it is back.
 
+The deck is the only box on both networks: it readdresses map traffic and carries files, so neither side ever needs a
+route to the other. A photo or data package shared from a mesh phone is fetched by the deck, uploaded to your server and
+announced there; one sent from the server is fetched by the deck and served to the mesh phones it was meant for.
+
 ## What you get
 
 | Part | What it does |
 |---|---|
-| **Bridge** | Mesh &#8644; server: positions, chat, markers and drawings, private DMs both ways, the deck's own GPS position |
+| **Bridge** | Mesh &#8644; server: positions, chat, markers, routes and drawings, private DMs both ways, the deck's own GPS position. Phones can move between the mesh and the server and stay reachable |
+| **Files** | Pictures, data packages and KML/KMZ overlays both ways (ATAK and iTAK), up to 5 MB, one at a time, SHA-256 checked. Runs in the background; problems show in Ops |
 | **Chat** | ATAK chat on the deck's own screen, mesh and server, including DMs, quick keys and report forms |
 | **Ops** | A status dashboard: server link, every mesh node with its health and radio link speed (found by itself), traffic, video, GPS, voice and alerts, plus a setup wizard |
 | **Video** | Every stream on the deck shows on the TAK map as a VIDEO marker at the person streaming: tap it, Play Video (works in iTAK on a mesh with no internet). Optionally, mesh phones' streams are copied to your server so server users can watch them too |
@@ -62,6 +67,10 @@ deck (tested with OpenTAKServer 1.7). Everything it needs is bundled, so install
 link to your TAK server (for example Tailscale over Wi-Fi or a hotspot); the phones on the mesh need none.
 
 The full guide (install, setup, every setting, DMs, voice, troubleshooting) is in the [README](../README.md).
+
+## Featured in
+
+- [HamRadio.my: TAK MESH TOC, a portable TAK operations center for the mesh](https://hamradio.my/tak-mesh-toc-portable-tak-operations-center-mesh/)
 
 ## License
 

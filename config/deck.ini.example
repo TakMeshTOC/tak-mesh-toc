@@ -54,8 +54,8 @@ DEDUPE_SECONDS = 0.5
 
 # --- Return path: server people, chats and markers -> mesh phones ---
 RETURN_PATH = 1
-# Only these CoT type prefixes are sent (comma separated): friendly units, chat, markers, drawings.
-# RETURN_TYPES = a-f-,b-t-f,b-m-p,u-d-
+# Only these CoT type prefixes are sent (comma separated): friendly units, chat, markers, routes, drawings.
+# RETURN_TYPES = a-f-,b-t-f,b-m-p,b-m-r,u-d-
 # Cap on events per second sent onto the HaLow mesh.
 # RETURN_MAX_PER_SEC = 5
 # RETURN_URL = udp://239.2.3.1:6969
@@ -90,6 +90,23 @@ LOCAL_SEND = udp://127.0.0.1:17014
 # Turn on (1) after installing server/mesh_mailroute on your OpenTAKServer (README, "Direct messages").
 DM_RELAY = 0
 
+# Files: pictures, data packages (.zip) and KML/KMZ a mesh phone sends to someone on the server. The deck downloads
+# the file from the phone, uploads it to the server with its own certificate and passes the notice on (to everyone
+# on the server: a phone can't say which server person it picked). One at a time. Problems show in Ops only.
+# Mesh phones reach server people through the deck, so this needs DM_RELAY = 1.
+# Server people see mesh phones as "reach me through the server" (endpoint *:-1:stcp), not at a mesh IP they
+# can't reach, so their apps send DMs and files through the server, which the deck carries. keep = unchanged.
+# SERVER_ENDPOINT = stcp
+# FILES = on
+# FILE_MAX_MB = 5
+# FILE_TYPES = zip,jpg,jpeg,png,kml,kmz
+# MARTI_URL =                  (the server's file API; blank = https://<COT_URL host>:8443)
+# Server -> mesh: a file someone on the server sends to mesh phones (or to everyone) is downloaded by the deck,
+# kept in a small cache and served to the mesh from the deck itself. Mesh phones' receipts go back to the sender.
+# FILE_PORT = 8098             (the deck's file port on the mesh)
+# FILE_CACHE_HOURS = 12
+# FILE_CACHE_MB = 200
+
 # GPS: put DECK's live position (from gpsd) in the bridge's report to the server, so DECK shows on
 # server phones' maps and moves with you. Set GPS in [deck].
 # GPS_INTERVAL = 15            (seconds between position updates while there is a fix)
@@ -105,7 +122,7 @@ DM_RELAY = 0
 # Chats and DMs on their way to the server are kept on disk until the server has them, and sent again after a
 # lost link. OUTBOX_FILE = off disables it. At most OUTBOX_HOURS old and OUTBOX_MAX messages.
 # OUTBOX_FILE = ~/bridge_outbox.jsonl
-# OUTBOX_HOURS = 24
+# OUTBOX_HOURS = 12
 # OUTBOX_MAX = 5000
 # DM route check: every DM_SELFTEST_INTERVAL s a test message to the made-up callsign DM_SELFTEST must come back
 # through the server helper (dashboard row "DM route"). DM_SELFTEST = off disables it.
@@ -132,6 +149,8 @@ ROSTER_MINUTES = 10
 MAX_SENDS_PER_10S = 6
 # Mesh down: messages wait in the outbox. Waiting longer than this = HELD until you press SEND or DROP
 OUTBOX_HOLD_SECONDS = 600
+# Still not sent after this many hours = EXPIRED: never sent, kept in the log (0 = never expire)
+OUTBOX_EXPIRE_HOURS = 12
 # Position put on chat messages (0,0 = none). A GPS can fill this in later
 LAT = 0
 LON = 0

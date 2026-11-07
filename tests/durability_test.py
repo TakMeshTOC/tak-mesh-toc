@@ -71,6 +71,21 @@ check("Ops view carries disk write failures", v["write_errors"] == 2 and "space"
 js = open(PKG + "/dashboard/app.js").read()
 check("Ops page shows 'not confirmed' and 'NOT SAVED TO DISK'", "not confirmed</b>" in js and "NOT SAVED TO DISK" in js)
 
+# ---- 4b. while running (not only at a restart), a chat waiting over OUTBOX_HOURS for the server is dropped
+B.Outbox.setup(cfg(OUTBOX_HOURS="1"))
+B.Outbox.keep(CHAT % 21); B.Outbox.keep(CHAT % 22)
+old_i = B.Outbox.by_data[CHAT % 21]
+t, d = B.Outbox.pending[old_i]; B.Outbox.pending[old_i] = (t - 2 * 3600, d)     # pretend it waited 2 h
+e0 = B.Outbox.expired
+B.Outbox.expire()
+check("running bridge drops a chat older than OUTBOX_HOURS, keeps the fresh one",
+      old_i not in B.Outbox.pending and (CHAT % 22) in B.Outbox.by_data and B.Outbox.expired == e0 + 1, B.Outbox.status())
+B.Outbox.setup(cfg(OUTBOX_HOURS="1"))
+check("the dropped chat is gone from the file too (not resent after a restart)",
+      (CHAT % 21) not in B.Outbox.by_data and (CHAT % 22) in B.Outbox.by_data)
+src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bridge", "tak_mesh_bridge.py")).read()
+check("expiry runs with every status write", "Outbox.expire()" in src.split("def snapshot(self):", 1)[1][:300])
+
 # ---- 5. UID flood: tables stay under the ceiling, phones already known keep their place
 table = {}
 B.Shared.mark(table, "REAL-PHONE")

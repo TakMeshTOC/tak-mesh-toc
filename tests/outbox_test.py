@@ -53,6 +53,28 @@ check("after restart a queued message comes back HELD", m6["status"]=="held" and
 check("after restart sent/dropped keep their status", c2.by_id[r1["id"]]["status"]=="sent" and c2.by_id[r5["id"]]["status"]=="dropped")
 check("export marks unsent messages", "NOT SENT: dropped" in c2.export_text() and "NOT SENT: held" in c2.export_text())
 
+# expiry: still not sent after OUTBOX_EXPIRE_HOURS -> expired in the background (no button), kept in the log, never sent
+cfg["OUTBOX_EXPIRE_HOURS"]="0.0008"   # about 3 s
+cfg["MESH_IFACE"]="nope0"; c4=dc.Chat(cfg)
+r7=c4.send("too old to matter"); r8=c4.send("held too, about to expire")
+time.sleep(3.2); c4.flush()
+m7=c4.by_id[r7["id"]]; m8=c4.by_id[r8["id"]]
+check("expired after OUTBOX_EXPIRE_HOURS, held or not, and out of the outbox", m7["status"]=="expired" and m8["status"]=="expired" and not c4.outbox, (m7["status"],m8["status"],len(c4.outbox)))
+check("expired note says why", "waited over" in m7["error"], m7["error"])
+check("info: nothing waiting after expiry", {k:c4.info()["outbox"][k] for k in ("waiting","held")}=={"waiting":0,"held":0}, c4.info()["outbox"])
+cfg["MESH_IFACE"]="lo"; c4.flush()
+check("an expired message is never sent when the mesh comes back", not any(b"too old to matter" in p for p in got()))
+check("SEND on an expired message is refused", not c4.outbox_action(r7["id"],"send")["ok"])
+c5=dc.Chat(cfg)
+check("after restart an expired message stays expired (not back in the outbox)", c5.by_id[r7["id"]]["status"]=="expired" and c5.by_id[r7["id"]] not in c5.outbox)
+check("export marks expired messages", "NOT SENT: expired" in c5.export_text())
+cfg["OUTBOX_EXPIRE_HOURS"]="0"; cfg["MESH_IFACE"]="nope0"; c6=dc.Chat(cfg)
+r9=c6.send("never expires"); time.sleep(0.3); c6.flush()
+check("OUTBOX_EXPIRE_HOURS = 0 turns expiry off", c6.by_id[r9["id"]]["status"] in ("queued","held") and c6.by_id[r9["id"]] in c6.outbox)
+page=open(PKG+"/chat/index.html").read()
+check("chat screen shows EXPIRED, struck through like DROPPED", 'case "expired": return ["", "EXPIRED"' in page and 'm.status === "expired" ? " dropped"' in page)
+cfg["OUTBOX_EXPIRE_HOURS"]="12"
+
 # ---------------- the sender itself failing shows on the chat screen; a bad packet is counted, not hidden
 import threading, types
 check("no sender failure: no STUCK", c.info()["outbox"]["error"] == "")
@@ -86,5 +108,14 @@ real_time.sleep(0.5)
 bp = c3.info()["bad_packets"]
 check("a packet that breaks the handler is counted with the reason (before: debug log, invisible)", bp["count"] == 3 and "ValueError: bad xml" in bp["last"], bp)
 dc.time = real_time
+# a phone that moves from the mesh to the server (and back): the DM route follows where it was heard last
+c7 = dc.Chat(cfg)
+c7.heard("ANDROID-MOVE", "MOVER-1", "mesh", "10.41.0.122:4242:tcp")
+p1 = [r["path"] for r in c7.roster_list() if r["uid"] == "ANDROID-MOVE"]
+real_time.sleep(0.05); c7.heard("ANDROID-MOVE", "MOVER-1", "server")
+p2 = [r["path"] for r in c7.roster_list() if r["uid"] == "ANDROID-MOVE"]
+real_time.sleep(0.05); c7.heard("ANDROID-MOVE", "MOVER-1", "mesh", "10.41.0.122:4242:tcp")
+p3 = [r["path"] for r in c7.roster_list() if r["uid"] == "ANDROID-MOVE"]
+check("DM route follows the phone: mesh, then server right after it moves, then mesh again", (p1, p2, p3) == (["mesh"], ["server"], ["mesh"]), (p1, p2, p3))
 print("%d/%d passed"%(sum(res),len(res)))
 sys.exit(0 if all(res) else 1)

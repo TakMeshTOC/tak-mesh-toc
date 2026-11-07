@@ -58,7 +58,7 @@ PY="$(command -v python3 || true)"
 ( cd "$SRC" && sha256sum --quiet -c MANIFEST.sha256 ) || { echo "   This package's files don't match its MANIFEST (bad download?). Stopping."; exit 1; }
 note "package files verified (MANIFEST.sha256)"
 note "python: $PY ($("$PY" -c 'import platform; print(platform.python_version())'))"
-# The bridge runs with "python3 -S": only the standard library and vendor/, never other copies of protobuf or
+# The bridge and Chat run with "python3 -S": only the standard library and vendor/, never other copies of protobuf or
 # cryptography installed on this computer (mixing versions breaks imports). Check exactly that here.
 if PYTHONPATH="$SRC/vendor" "$PY" -S -W ignore -c 'import pytak, takproto' >/dev/null 2>&1; then
   note "bundled libraries load: $(PYTHONPATH="$SRC/vendor" "$PY" -S -W ignore -c 'from importlib.metadata import version as v; print("PyTAK", v("pytak"), "| takproto", v("takproto"), "| protobuf", v("protobuf"))' 2>/dev/null)"
@@ -66,7 +66,7 @@ else
   echo "   The bundled libraries (vendor/) don't load with this python. Stopping."; exit 1
 fi
 if command -v ss >/dev/null && ! systemctl is-active --quiet manet-bridge 2>/dev/null; then
-  for p in 4242 4243 8080 8090; do
+  for p in 4242 4243 8080 8090 8098; do
     if ss -ltnH "sport = :$p" 2>/dev/null | grep -q .; then
       note "NOTE: something already listens on TCP port $p (another TAK bridge or chat program?): see  ss -ltnp | grep :$p"
     fi
@@ -166,7 +166,7 @@ EOF
 }
 TMPD="$(mktemp -d)"
 mkunit manet-bridge "TAK MESH TOC: mesh <-> TAK server bridge" "$PY -S $CURL/bridge/tak_mesh_bridge.py $BASE/deck.ini" "tailscaled.service" 5 "" > "$TMPD/manet-bridge.service"
-mkunit manet-chat "TAK MESH TOC: Chat (ATAK chat on the deck's screen)" "$PY $CURL/chat/deck_chat.py --config $BASE/deck.ini" "" 3 "" > "$TMPD/manet-chat.service"
+mkunit manet-chat "TAK MESH TOC: Chat (ATAK chat on the deck's screen)" "$PY -S $CURL/chat/deck_chat.py --config $BASE/deck.ini" "" 3 "" > "$TMPD/manet-chat.service"
 mkunit manet-dashboard "TAK MESH TOC: Ops dashboard" "$PY $CURL/dashboard/dashboard_server.py --config $BASE/deck.ini" "" 3 "" > "$TMPD/manet-dashboard.service"
 # voice: on-failure, so VOICE = off (a clean exit) leaves it stopped instead of restarting it every few seconds
 mkunit manet-voice "TAK MESH TOC: voice (OpenMANET talk groups <-> Mumble)" "$PY $CURL/voice/manet_voice.py --config $BASE/deck.ini" "tailscaled.service" 5 "" on-failure > "$TMPD/manet-voice.service"
@@ -195,6 +195,9 @@ if ! command -v ffmpeg >/dev/null 2>&1; then note "video: ffmpeg not found. Befo
 if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q '^Status: active'; then
   if $SUDO ufw status 2>/dev/null | grep -q '38801:38810/udp on '"$MESHIF"; then note "voice: UFW already allows the talk group ports on $MESHIF"
   else act $SUDO ufw allow in on "$MESHIF" proto udp to any port 38801:38810 comment "MANET_MESH_BRIDGE voice (OpenMANET talk groups)"; fi
+  # files from the server: mesh phones download them from the deck (FILE_PORT, default 8098)
+  if $SUDO ufw status 2>/dev/null | grep -q '8098/tcp on '"$MESHIF"; then note "files: UFW already allows the file port on $MESHIF"
+  else act $SUDO ufw allow in on "$MESHIF" proto tcp to any port 8098 comment "TAK MESH TOC files (server -> mesh)"; fi
 fi
 # Ops lists the mesh's nodes from OpenMANET's own gossip (alfred), which only answers an EUI-64 IPv6 link-local address.
 # Most decks use NetworkManager's "stable-privacy" kind, so switch the mesh port's connection to eui64 (once).

@@ -34,6 +34,7 @@ clean videorelay_test.py
 clean faults_test.py
 clean ident_check.py
 clean durability_test.py
+clean file_relay_test.py
 clean pytak_patch_test.py
 clean fresh_setup_test.py
 run fake_ots_test.py
@@ -50,6 +51,7 @@ clean regex_worst.py
 run big_test.py
 run link_test.py
 run robust_test.py
+run protobuf_conflict_test.py
 clean repair_test.py
 run outbox_e2e.py
 clean fuzz_test.py "$PKG" /tmp/mmb_fuzz_test 5000 5000

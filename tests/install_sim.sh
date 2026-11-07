@@ -71,6 +71,7 @@ check "deck.ini written from the example, mode 600, callsign SIM-1" '[ "$(stat -
 check "it says what to set next (server and certificate)" 'grep -q "set COT_URL" "$T/install.log"'
 check "release folder is read-only" '! touch "$BASE/releases/$NEWV/x" 2>/dev/null'
 check "bridge service runs python -S (bundled libraries only)" 'grep -q "^ExecStart=.*python3 -S .*/current/bridge/tak_mesh_bridge.py" "$MANET_MESH_BRIDGE_UNIT_DIR/manet-bridge.service"'
+check "chat service runs python -S too (another protobuf on the computer can't break it)" 'grep -q "^ExecStart=.*python3 -S .*/current/chat/deck_chat.py" "$MANET_MESH_BRIDGE_UNIT_DIR/manet-chat.service"'
 check "four services and the group are enabled" 'for u in manet-bridge.service manet-chat.service manet-dashboard.service manet-voice.service manet_mesh_bridge.target; do [ -f "$FAKESYS/state/$u.enabled" ] || exit 1; done'
 check "voice service: in the group, restarts only on failure (VOICE = off stays stopped)" 'grep -q "^Wants=.*manet-voice.service" "$MANET_MESH_BRIDGE_UNIT_DIR/manet_mesh_bridge.target" && grep -q "^Restart=on-failure" "$MANET_MESH_BRIDGE_UNIT_DIR/manet-voice.service" && grep -q "^Restart=always" "$MANET_MESH_BRIDGE_UNIT_DIR/manet-chat.service"'
 check "deck.ini has a [voice] section, off" 'grep -q "^\[voice\]" "$BASE/deck.ini" && grep -q "^VOICE = off" "$BASE/deck.ini"'
