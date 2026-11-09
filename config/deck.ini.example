@@ -295,3 +295,11 @@ MUMBLE_CERT_SHA256 =
 # BRIDGE_STATE_FILE = ~/voice_bridges.json
 # Chat talks to the voice service here (LISTEN ON DECK, the bridge switches). Loopback only. off = neither.
 # CONTROL = 127.0.0.1:17016
+# ---- PTT box on the deck: a USB PTT box (CM108 sound card, PTT on its volume-down button) plugged into the deck.
+# Key it and the deck talks on the talk group picked on the Voice page (PTT BOX TALKS ON ...): the mesh, plus its
+# Mumble channel when bridged. Its headset plays that talk group all the time. auto = used whenever it is plugged
+# in; off = never. Needs VOICE = on, alsa-utils, and the deck user in groups input + audio (install.sh does that).
+# DECK_PTT = auto
+# Its talk group until one is picked on the Voice page (blank = the first, TG1). The pick is kept in the state file.
+# DECK_PTT_TG =
+# DECK_PTT_STATE_FILE = ~/voice_deckptt.json

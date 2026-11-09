@@ -127,7 +127,7 @@ json.dump({"mesh_peers": [{"cs": "ALPHA-1", "ip": "127.0.0.1"}]}, open(BSTATUS, 
 cfg = dict(mv.DEFAULTS, VOICE="on", MESH_GROUP=GROUP, MESH_PORTS="38801,38803,38805", TALKGROUPS="38801:TG1, 38803:TG2",
            MESH_ADDR="127.0.0.1", MESH_LOOP="1", MUMBLE="127.0.0.1:%d" % MPORT, MUMBLE_PASSWORD=SPW, MUMBLE_CERT_SHA256=PIN,
            MAX_TALK_S="3", STATUS_FILE=STATUS, BRIDGE_STATUS_FILE=BSTATUS, CONTROL="127.0.0.1:%d" % free_port(),
-           BRIDGE_STATE_FILE=W + "/voice_bridges.json")
+           BRIDGE_STATE_FILE=W + "/voice_bridges.json", DECK_PTT="off")   # a real PTT box on a test deck stays out of it
 mesh = Mesh([38801, 38803, 38805])
 gw = mv.Gateway(cfg)
 threading.Thread(target=gw.run, daemon=True).start()

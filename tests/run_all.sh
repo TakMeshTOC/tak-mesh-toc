@@ -46,6 +46,7 @@ run wizard_test.py
 run echo_test.py
 run look_test.py
 run voice_test.py "$PKG"
+run deckptt_test.py "$PKG"
 run rotate_test.py
 clean regex_worst.py
 run big_test.py

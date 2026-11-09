@@ -454,6 +454,28 @@ def check_voice(cp):
             else:
                 line("ok", "Voice: %s" % g.get("name"), "port %s <-> Mumble channel %r, %d on the mesh, %d on Mumble" % (
                     g.get("port"), g.get("channel"), len(g.get("mesh") or []), len(g.get("mumble") or [])))
+        p = st.get("deck_ptt") if isinstance(st.get("deck_ptt"), dict) else {}
+        if p.get("enabled"):
+            if p.get("error"):
+                line("warn", "Voice: PTT box", p["error"])
+            elif p.get("present"):
+                line("ok", "Voice: PTT box", "plugged in (sound card %s), talks on %s" % (p.get("card") or "?", p.get("tg") or "?"))
+            else:
+                line("info", "Voice: PTT box", "not plugged in (talks on %s when it is)" % (p.get("tg") or "?"))
+    if sec(cp, "voice", "DECK_PTT", "auto").lower() not in ("off", "0", "no", "false"):
+        import grp
+        import pwd
+        me = pwd.getpwuid(os.getuid()).pw_name
+        try:
+            mine = {g.gr_name for g in grp.getgrall() if me in g.gr_mem} | {grp.getgrgid(pwd.getpwnam(me).pw_gid).gr_name}
+        except (KeyError, OSError):
+            mine = set()
+        need = [g for g in ("input", "audio") if g not in mine and any(x.gr_name == g for x in grp.getgrall())]
+        if need:
+            line("warn", "Voice: PTT box", "%s is not in group %s: run install.sh again (or sudo usermod -aG %s %s), then meshtoc restart"
+                 % (me, " + ".join(need), ",".join(need), me))
+        elif not (shutil.which("arecord") and shutil.which("aplay")):
+            line("warn", "Voice: PTT box", "arecord/aplay not found: sudo apt install alsa-utils")
     rc, out = sh("ufw", "status")
     if rc == 0 and "Status: active" in out and "38801" not in out:
         line("warn", "Voice: firewall", "UFW is on and blocks the talk groups: sudo ufw allow in on eth0 proto udp to any port 38801:38810")

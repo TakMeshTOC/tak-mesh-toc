@@ -181,8 +181,14 @@ goes onto the mesh the way OpenMANET sends it.
   All five talk groups are always watched, bridged or not.
 - **LISTEN ON DECK** plays the selected talk group (mesh phones and Mumble users) through the deck's speaker or
   headphones, with a volume slider and a level meter. One talk group at a time. Nothing is recorded.
-- **Deck screen only:** listening and the switches work on the deck's own screen. From another device the VOICE page
-  is read-only, so nobody on the mesh can change your bridging or pull an audio stream over the radio.
+- **PTT box on the deck:** plug a USB PTT box (a CM108 sound card with PTT wired to its volume-down button, a
+  tactical headset and PTT on it) into the deck and the deck operator can talk. Key it and the deck talks on the talk
+  group picked with **PTT BOX TALKS ON** (the mesh, plus its Mumble channel when bridged), shown as "DECK (PTT box)".
+  The headset plays that talk group all the time and never your own voice. The button is taken over, so it never
+  changes the deck's volume. Found within a few seconds of plugging in; the header pill says READY, TALKING, BUSY or
+  NOT PLUGGED IN, and only real problems reach Ops. `DECK_PTT = off` in `[voice]` turns it off.
+- **Deck screen only:** listening, the switches and the PTT box talk group work on the deck's own screen. From another
+  device the VOICE page is read-only, so nobody on the mesh can change your bridging or pull an audio stream over the radio.
 
 **Set up, once** (details in `[voice]` of `deck.ini`):
 1. **Mesh nodes:** turn on OpenMANET's voice. It is off by default. In `/etc/openmanetd/config.yml` on each node set
@@ -306,6 +312,7 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ~/manet_mesh_bridge/previous                 the version before (for rollback)
 ~/bridge_status.json  ~/bridge_outbox.jsonl  ~/deck_chat_log.jsonl  ~/dashboard_events.jsonl  ~/dashboard_history.jsonl
 ~/voice_status.json  ~/voice_bridges.json   voice: who is talking, which talk groups are switched on (nothing is recorded)
+~/voice_deckptt.json                         the talk group the PTT box on the deck talks on
 ~/mesh_status.json                           Ops' mesh summary for the DECK status line
 ~/file_cache/                                files from the server waiting for mesh phones (12 h, 200 MB at most)
 ```

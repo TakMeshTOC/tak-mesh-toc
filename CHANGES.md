@@ -1,5 +1,23 @@
 # Changes
 
+## 3.1.23: PTT box on the deck
+- **The deck operator can talk.** Plug a USB PTT box into the deck (a CM108 sound card with PTT wired to its
+  volume-down button, a tactical headset and PTT on it). Key it and the deck talks on the talk group picked on the
+  VOICE page: the mesh, plus that talk group's Mumble channel when it is bridged. It shows as "DECK (PTT box)", via
+  DECK, like any talker, and one talker per talk group still holds: keyed while someone talks = BUSY, nothing sent.
+- **The headset plays that talk group all the time**, like a radio, and never the deck's own voice.
+- **The button is taken over**, so it never turns the deck's volume down. The box and its sound card are paired by
+  their USB port, so another USB sound card on the deck is never mixed up with it. Found within a few seconds of
+  plugging in; unplugging (even while keyed) frees the channel and just shows NOT PLUGGED IN.
+- **VOICE page:** a PTT BOX pill in the header (READY / TALKING / BUSY / NOT PLUGGED IN), a badge on its talk group,
+  and a PTT BOX TALKS ON row (deck screen only, like the other switches). The pick is remembered (~/voice_deckptt.json).
+- **Ops:** only real problems show (e.g. no permission to read the button). `meshtoc check` says whether the box is
+  plugged in and whether the deck user is in groups input + audio.
+- **install.sh** adds the deck user to groups input and audio and checks for alsa-utils (arecord/aplay).
+- New `[voice]` settings: `DECK_PTT = auto` (off = never), `DECK_PTT_TG`, `DECK_PTT_STATE_FILE`.
+- Tests: `deckptt_test.py` (finding the box, mesh + Mumble, headset, busy, talk group switch, not bridged, unplug
+  while keyed, Voice page). `voice_test.py` keeps a real PTT box out of its gateway.
+
 ## 3.1.22: phones that move between the mesh and the server
 - **No 10-minute wait after a phone moves.** The loop guard (anything heard on the mesh in the last 10 min is never
   sent back to the mesh) also held back a phone that had just moved from the mesh to the server: its new reports and

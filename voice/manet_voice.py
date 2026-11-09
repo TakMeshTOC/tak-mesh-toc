@@ -8,6 +8,8 @@
   no echo, no backlog: audio never returns to its source, and late audio is dropped, never replayed.
   monitoring       every talk group port is watched; TALKGROUPS are bridged from the start, the rest can be
                    switched on from the Voice page. The page can also play one talk group on the deck.
+  PTT box          a PTT box plugged into the deck (DECK_PTT = auto) talks on the talk group picked on the Voice
+                   page (mesh, plus Mumble when bridged) and plays that talk group in its headset (deckptt.py).
 Config: [voice] in deck.ini. Standard library plus the system's libopus.
 """
 import argparse
@@ -31,6 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "..", "common")]
 import opuscodec                       # noqa: E402
 from mumbleclient import MumbleClient  # noqa: E402
+from deckptt import DeckPTT, DECK_NAME  # noqa: E402
 try:
     from deckcommon import apply_deck, iface_ipv4, mesh_iface, is_auto, watch_mesh_addr  # noqa: E402
 except ImportError:                    # running from a bare copy of voice/
@@ -58,6 +61,9 @@ DEFAULTS = {
     "BRIDGE_STATUS_FILE": "~/bridge_status.json",
     "BRIDGE_STATE_FILE": "~/voice_bridges.json",   # talk groups switched on/off on the Voice page
     "CONTROL": "127.0.0.1:17016",      # for Chat only: listen on deck, bridge on/off. Loopback; off = none
+    "DECK_PTT": "auto",                # PTT box on the deck: auto = used whenever it is plugged in; off = never
+    "DECK_PTT_TG": "",                 # its talk group until one is picked on the Voice page (blank = the first)
+    "DECK_PTT_STATE_FILE": "~/voice_deckptt.json",   # the talk group picked on the Voice page
 }
 MAX_LISTENERS = 4
 SILENCE = bytes(opuscodec.FRAME * 2)
@@ -134,7 +140,7 @@ class TalkGroup:
         self.ssrc = random.getrandbits(32)
         self.seq, self.ts = random.getrandbits(16), random.getrandbits(32)
         self.lock = threading.Lock()
-        self.floor = None              # ("mesh", ssrc) | ("mumble", session)
+        self.floor = None              # ("mesh", ssrc) | ("mumble", session) | ("deck", 0): the PTT box
         self.floor_name = self.floor_via = ""
         self.floor_last = self.floor_since = 0.0
         self.blocked = {}              # who -> until (held too long: ignored until they pause)
@@ -151,7 +157,8 @@ class TalkGroup:
         self.client = None
         self.log = []                  # recent transmissions, newest first
         self.stats = {"mesh_rx": 0, "mesh_to_mumble": 0, "mumble_rx": 0, "mumble_to_mesh": 0, "dropped_busy": 0,
-                      "mesh_lost": 0, "ignored_own": 0, "bad_rtp": 0, "transmissions": 0, "cut_long": 0}
+                      "mesh_lost": 0, "ignored_own": 0, "bad_rtp": 0, "transmissions": 0, "cut_long": 0,
+                      "deck_rx": 0, "deck_to_mesh": 0, "deck_to_mumble": 0}
 
     # ---- floor
     def _take(self, who, name, via):
@@ -190,7 +197,7 @@ class TalkGroup:
         log.info("%s: %s done (%.1f s)", self.name, self.floor_name, dur)
         self.floor, self.floor_name, self.floor_via = None, "", ""
         self.pcm = b""
-        if kind == "mesh" and self.client and not self.client.closed.is_set():
+        if kind in ("mesh", "deck") and self.client and not self.client.closed.is_set():
             try:
                 self.client.end_voice()
             except OSError:
@@ -224,8 +231,10 @@ class TalkGroup:
             log.info("%s: no longer bridged to Mumble", self.name)
 
     # ---- listen on deck
-    def feed(self, pcm):
+    def feed(self, pcm, skip=None):
         for q in list(self.listeners):
+            if q is skip:
+                continue                            # the PTT box headset never hears its own voice
             try:
                 q.put_nowait(pcm)
             except queue.Full:
@@ -325,15 +334,46 @@ class TalkGroup:
     def _send_mesh(self, frame):
         if self.listeners:
             self.feed(frame)
-        pkt = build_rtp(self.seq, self.ts, self.ssrc, self.enc.encode(frame), marker=self.first_out)
+        self._send_rtp(self.enc.encode(frame), "mumble_to_mesh")
+
+    def _send_rtp(self, opus, stat):
+        pkt = build_rtp(self.seq, self.ts, self.ssrc, opus, marker=self.first_out)
         self.first_out = False
         self.seq = (self.seq + 1) & 0xFFFF
         self.ts = (self.ts + opuscodec.FRAME) & 0xFFFFFFFF
         try:
             self.gw.tx.sendto(pkt, (self.gw.group, self.port))
-            self.stats["mumble_to_mesh"] += 1
+            self.stats[stat] += 1
         except OSError as e:
             log.warning("%s: mesh send failed: %s", self.name, e)
+
+    # ---- the PTT box on the deck
+    def on_deck(self, frame, last=False):
+        """One 20 ms frame (16-bit 48 kHz mono) from the PTT box mic; None with last=True when PTT is let go.
+        Goes to the mesh, and to Mumble when bridged. False = someone else holds the channel."""
+        if frame is not None:
+            if not self._take(("deck", 0), DECK_NAME, "deck"):
+                self.stats["dropped_busy"] += 1
+                return False
+            self.stats["deck_rx"] += 1
+            if self.enc is None:
+                self.enc = opuscodec.Encoder()
+            opus = self.enc.encode(frame)
+            if self.listeners:
+                self.feed(frame, skip=self.gw.deck.monitor_q if self.gw.deck else None)
+            self._send_rtp(opus, "deck_to_mesh")
+            c = self.client
+            if self.bridged and c is not None and not c.closed.is_set():
+                try:
+                    c.send_voice(opus, frames=2)
+                    self.stats["deck_to_mumble"] += 1
+                except OSError:
+                    pass
+        if last:
+            with self.lock:
+                if self.floor == ("deck", 0):
+                    self._release_locked()
+        return True
 
     # ---- Mumble connection, kept up
     def mumble_loop(self, stop):
@@ -422,6 +462,9 @@ class Gateway:
                     self.wanted[g.port] = saved[str(g.port)]
         except (OSError, ValueError, AttributeError):
             pass
+        self.deck = None
+        if cfg.get("DECK_PTT", "auto").strip().lower() not in ("off", "0", "no", "false", ""):
+            self.deck = DeckPTT(self, cfg)
         self.sel = selectors.DefaultSelector()
         tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(self.mesh_addr))
@@ -456,7 +499,8 @@ class Gateway:
     def write_status(self):
         path = os.path.expanduser(self.cfg["STATUS_FILE"])
         st = {"schema": 1, "ts": time.time(), "mesh_group": self.group, "mumble": self.cfg["MUMBLE"],
-              "groups": [g.status() for g in self.groups]}
+              "groups": [g.status() for g in self.groups],
+              "deck_ptt": self.deck.status() if self.deck else {"enabled": False}}
         try:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
@@ -490,6 +534,8 @@ class Gateway:
             if self.wanted[g.port]:
                 g.set_bridged(True)
         threading.Thread(target=self.status_loop, daemon=True).start()
+        if self.deck:
+            threading.Thread(target=self.deck.run, daemon=True).start()
         if self.cfg["CONTROL"].strip().lower() not in ("", "off", "0", "no"):
             try:
                 self.control = control_server(self)
@@ -500,6 +546,8 @@ class Gateway:
 
     def close(self):
         self.stop.set()
+        if self.deck:
+            self.deck.close()
         if getattr(self, "control", None):
             self.control.shutdown()
             self.control.server_close()
@@ -522,7 +570,8 @@ def gone(sock):
 
 
 def control_server(gw):
-    """Loopback HTTP for Chat: GET /listen?tg=TG1 (raw 16-bit 48 kHz mono, live), POST /bridge {tg, on}."""
+    """Loopback HTTP for Chat: GET /listen?tg=TG1 (raw 16-bit 48 kHz mono, live), POST /bridge {tg, on},
+    POST /deckptt {tg}: the talk group the PTT box talks on."""
     host, port = hostport(gw.cfg["CONTROL"])
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise OSError("CONTROL must be a loopback address (127.0.0.1:port)")
@@ -577,7 +626,21 @@ def control_server(gw):
                 log.info("%s: stopped listening on deck", g.name)
 
         def do_POST(self):
-            if urlparse(self.path).path != "/bridge":
+            path = urlparse(self.path).path
+            if path == "/deckptt":
+                if gw.deck is None:
+                    return self._json(409, {"ok": False, "error": "the PTT box is off (DECK_PTT = off in [voice])"})
+                try:
+                    body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 4096)) or b"{}")
+                    name = str(body["tg"])
+                except (ValueError, KeyError, TypeError):
+                    return self._json(400, {"ok": False, "error": "need {\"tg\": \"TG2\"}"})
+                g = gw.deck.set_tg(name)
+                if g is None:
+                    return self._json(404, {"ok": False, "error": "no talk group %s" % name[:16]})
+                gw.write_status()
+                return self._json(200, {"ok": True, "tg": g.name})
+            if path != "/bridge":
                 return self._json(404, {"error": "not found"})
             try:
                 body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 4096)) or b"{}")

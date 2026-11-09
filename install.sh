@@ -190,6 +190,13 @@ rm -rf "$TMPD"
 # voice needs the system's libopus and, if UFW is on, the OpenMANET talk group ports open on the mesh side
 if ! { ldconfig -p 2>/dev/null | grep -q 'libopus\.so\.0'; }; then note "voice: libopus not found. Before turning VOICE on: sudo apt install libopus0"; fi
 if ! command -v ffmpeg >/dev/null 2>&1; then note "video: ffmpeg not found. Before turning VIDEO_RELAY on: sudo apt install ffmpeg"; fi
+# PTT box on the deck (DECK_PTT in [voice]): manet-voice reads its button (group input) and uses its sound card
+# (group audio, arecord/aplay from alsa-utils). Groups take effect when the services restart.
+for grp in input audio; do
+  if getent group "$grp" >/dev/null 2>&1 && ! id -nG "$U" | tr ' ' '\n' | grep -qx "$grp"; then act $SUDO usermod -aG "$grp" "$U" || note "PTT box: could not add $U to group $grp (add it by hand: sudo usermod -aG $grp $U)"
+  else note "PTT box: $U already in group $grp (or no such group)"; fi
+done
+if ! command -v arecord >/dev/null 2>&1 || ! command -v aplay >/dev/null 2>&1; then note "PTT box: arecord/aplay not found. For a PTT box on the deck: sudo apt install alsa-utils"; fi
 # The firewall rule keeps its pre-3.0 comment ("MANET_MESH_BRIDGE voice"): uninstall.sh finds the rule by it on decks
 # that were set up before the rename.
 if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q '^Status: active'; then

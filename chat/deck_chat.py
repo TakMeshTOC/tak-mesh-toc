@@ -1220,13 +1220,15 @@ class Handler(BaseHTTPRequestHandler):
             res = self.chat.send(str(body.get("text", "")), to=(str(body["to"]) if body.get("to") else None))
         elif u.path == "/api/outbox":
             res = self.chat.outbox_action(str(body.get("id", "")), str(body.get("action", "")))
-        elif u.path == "/api/voice/bridge":
+        elif u.path in ("/api/voice/bridge", "/api/voice/deckptt"):
+            ptt = u.path.endswith("deckptt")
             if not self._local():
-                return self._send(403, {"ok": False, "error": "bridging is switched on the deck's own screen only"})
+                return self._send(403, {"ok": False, "error": ("the PTT box talk group is" if ptt else "bridging is") +
+                                        " switched on the deck's own screen only"})
+            req = {"tg": str(body.get("tg", ""))[:16]} if ptt else {"tg": str(body.get("tg", ""))[:16], "on": bool(body.get("on"))}
             try:
                 c = self._voice_conn(5)
-                c.request("POST", "/bridge", json.dumps({"tg": str(body.get("tg", ""))[:16], "on": bool(body.get("on"))}),
-                          {"Content-Type": "application/json"})
+                c.request("POST", "/deckptt" if ptt else "/bridge", json.dumps(req), {"Content-Type": "application/json"})
                 rr = c.getresponse()
                 out = rr.read(4096)
                 c.close()

@@ -117,6 +117,18 @@ main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px 18px 24px; align
 .hint { color: var(--dim); font-size: .85em; padding: 0 18px 18px; }
 .hint code { font-family: var(--mono); color: var(--g); }
 h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h1 .sub { color: var(--dim); font-weight: 600; }
+/* PTT box on the deck (approved mockup 2026-11-08) */
+.pill.ptt::before { content: "\1F399\FE0E  "; }
+.pttrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #0f151c; }
+.pttrow .lab { font-family: var(--cond); font-weight: 600; font-size: .85em; letter-spacing: .14em; color: var(--dim); }
+.pttrow .val { font-family: var(--mono); font-size: .8em; color: var(--dim); }
+.pttrow .val.ok { color: var(--ok); } .pttrow .val.warn { color: var(--amber); }
+.tbtn { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; background: transparent; color: var(--g); border: 1px solid var(--ok);
+  font-family: var(--cond); font-weight: 700; font-size: 1em; letter-spacing: .14em; cursor: pointer; }
+.tbtn:hover:not(:disabled), .tbtn:focus-visible { background: rgba(76,195,138,.12); outline: none; }
+.tbtn[aria-pressed="true"] { background: rgba(76,195,138,.18); color: var(--ok); cursor: default; }
+.tbtn:disabled:not([aria-pressed="true"]) { opacity: .45; cursor: not-allowed; }
+.tg .pbadge { font-family: var(--mono); font-size: .7em; padding: 1px 6px; border: 1px solid var(--ok); color: var(--ok); margin-left: 8px; vertical-align: .2em; letter-spacing: .04em; }
 </style>
 </head>
 <body>
@@ -126,6 +138,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
   <div class="hright">
     <span class="pill info" id="pmesh">MESH VOICE ...</span>
     <span class="pill info" id="pmum">MUMBLE ...</span>
+    <span class="pill info ptt" id="pptt" hidden></span>
     <span id="clock"></span>
   </div>
 </header>
@@ -148,10 +161,12 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       <div class="ctlnote" id="ctlnote" hidden>Listening and bridging are set on the deck's own screen.</div>
       <div class="ctlnote ctlmsg" id="ctlmsg" role="status" hidden></div>
     </div>
+    <div class="pttrow" id="pttrow" hidden><span class="lab">PTT BOX</span><span class="val" id="pttval"></span><span class="grow" style="flex:1"></span>
+      <button type="button" class="tbtn" id="pttbtn" aria-pressed="false"></button></div>
     <div id="dbody" aria-live="polite"></div>
   </section>
 </main>
-<p class="hint">Talk on a VX phone (Network: <code>wlan0</code>) or in the talk group's Mumble channel. One talker at a time per talk group.</p>
+<p class="hint">Talk on a VX phone (Network: <code>wlan0</code>), in the talk group's Mumble channel, or with the PTT box plugged into the deck. One talker at a time per talk group.</p>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
@@ -164,8 +179,10 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
 
   function pill(id, text, cls) { const e = $(id); e.textContent = text; e.className = "pill " + cls; }
 
+  let ptt = {};
   function render(v) {
     last = v;
+    ptt = (v.running && v.deck_ptt) || {};
     const down = $("down");
     if (!v.running) {
       down.style.display = "block";
@@ -194,7 +211,8 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       const right = t ? "live" : lastTx ? zt(lastTx.ts) + " " + lastTx.who.split(" (")[0] : "quiet";
       const cls = "tg" + (t ? " talking" : "") + (!g.bridged ? " off" : "") + (g.bridged && g.mumble_up && !g.in_channel && !t ? " warnch" : "");
       return '<button type="button" class="' + cls + '" data-tg="' + esc(g.name) + '" aria-pressed="' + (g.name === sel) + '"><span class="bar"></span><span class="in">' +
-        '<span class="r1"><span class="nm">' + esc(g.name) + (g.name === listenTg ? '<span class="badge">&#9835; LISTENING</span>' : '') + '</span><span class="st">' + esc(state) + '</span></span>' +
+        '<span class="r1"><span class="nm">' + esc(g.name) + (g.name === listenTg ? '<span class="badge">&#9835; LISTENING</span>' : '') +
+        (ptt.enabled && g.name === ptt.tg ? '<span class="pbadge">&#127897;&#65038; PTT BOX</span>' : '') + '</span><span class="st">' + esc(state) + '</span></span>' +
         '<span class="map">:' + g.port + ' ↔ ' + (g.bridged ? 'Mumble "' + esc(g.channel) + '"' : 'not bridged') + '</span>' +
         '<span class="cnt"><span>' + (g.mesh || []).length + ' on mesh</span><span>' + (g.mumble || []).length + ' on Mumble</span><span>' + esc(right) + '</span></span>' +
         '</span></button>';
@@ -203,6 +221,31 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     $("dtop").innerHTML = g ? head(g) : "";
     $("dbody").innerHTML = g ? detail(g) : '<div class="empty">No talk groups yet.</div>';
     controls(g, v);
+    pttView(g, v);
+  }
+
+  // ---- the PTT box plugged into the deck: which talk group it talks on, and how it is doing
+  function pttView(g, v) {
+    const on = !!ptt.enabled, pill = $("pptt");
+    pill.hidden = !on; $("pttrow").hidden = !on || !g;
+    if (!on) return;
+    let text, cls;
+    if (ptt.error) { text = "PTT BOX · CHECK OPS"; cls = "warn"; }
+    else if (!ptt.present) { text = "PTT BOX · NOT PLUGGED IN"; cls = "info"; }
+    else if (ptt.talking) { text = "PTT BOX · " + ptt.tg + " · TALKING"; cls = "ok"; }
+    else if (ptt.busy) { text = "PTT BOX · " + ptt.tg + " · BUSY"; cls = "warn"; }
+    else { text = "PTT BOX · " + ptt.tg + " · READY"; cls = "ok"; }
+    pill.textContent = text; pill.className = "pill ptt " + cls;
+    if (!g) return;
+    const val = $("pttval");
+    if (ptt.error) { val.textContent = ptt.error; val.className = "val warn"; }
+    else if (!ptt.present) { val.textContent = "not plugged in · talks on " + ptt.tg + " when it is"; val.className = "val"; }
+    else if (ptt.busy) { val.textContent = "waiting: " + ptt.busy + " is talking on " + ptt.tg; val.className = "val warn"; }
+    else { val.textContent = "plugged in · headset hears " + ptt.tg; val.className = "val ok"; }
+    const mine = g.name === ptt.tg, b = $("pttbtn"), can = !!(v && v.running && v.control);
+    b.setAttribute("aria-pressed", mine);
+    b.innerHTML = mine ? "&#10003; PTT BOX TALKS ON " + esc(g.name) : "PTT BOX: TALK ON " + esc(g.name);
+    b.disabled = mine || !can;
   }
 
   function people(list, gw) {
@@ -296,6 +339,14 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     if (!g) return;
     $("bridge").disabled = true;
     fetch("/api/voice/bridge", { method: "POST", headers: { "Content-Type": "application/json", "X-Deck": "1" }, body: JSON.stringify({ tg: g.name, on: !g.bridged }) })
+      .then(r => r.json().then(j => { if (!r.ok || !j.ok) note("Not changed: " + (j.error || "HTTP " + r.status)); }))
+      .catch(() => note("Not changed: Chat is not answering")).then(poll);
+  });
+
+  $("pttbtn").addEventListener("click", () => {
+    if (!sel) return;
+    $("pttbtn").disabled = true;
+    fetch("/api/voice/deckptt", { method: "POST", headers: { "Content-Type": "application/json", "X-Deck": "1" }, body: JSON.stringify({ tg: sel }) })
       .then(r => r.json().then(j => { if (!r.ok || !j.ok) note("Not changed: " + (j.error || "HTTP " + r.status)); }))
       .catch(() => note("Not changed: Chat is not answering")).then(poll);
   });

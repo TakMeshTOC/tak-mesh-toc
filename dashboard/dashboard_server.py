@@ -1262,7 +1262,10 @@ class Collector(threading.Thread):
             groups.append({"name": str(g.get("name", "?")), "bridged": bool(g.get("bridged")), "mumble_up": bool(g.get("mumble_up")),
                            "talking": {"name": str(t.get("name", "?")), "via": str(t.get("via", ""))} if isinstance(t, dict) else None,
                            "mesh": len(g.get("mesh") or []), "mumble": len(g.get("mumble") or [])})
-        return {"running": age < 10, "groups": groups}
+        p = st.get("deck_ptt") if isinstance(st.get("deck_ptt"), dict) else {}
+        ptt = {"enabled": bool(p.get("enabled")), "present": bool(p.get("present")), "tg": str(p.get("tg") or ""),
+               "talking": bool(p.get("talking")), "error": str(p.get("error") or "")[:200]} if p.get("enabled") else None
+        return {"running": age < 10, "groups": groups, "deck_ptt": ptt}
 
     def mesh(self, deck, bridge=None):
         """The mesh link: OK when any node answers a ping. If none answers but mesh traffic arrived in the last minute,
@@ -1403,6 +1406,11 @@ class Collector(threading.Thread):
             self.changed("fault:" + area, area not in on, "%s: working again" % label,
                          on[area]["text"] if area in on else label, level_down=level, cat="bridge")
         active = active + faults
+        voice = self.voice()
+        ptt_err = (voice or {}).get("running") and ((voice or {}).get("deck_ptt") or {}).get("error") or ""
+        self.changed("deck_ptt", not ptt_err, "PTT box working again", "PTT box: %s" % ptt_err, level_down="warn", cat="deck")
+        if ptt_err:
+            active.append({"id": "deck_ptt", "level": "warn", "tile": "deck", "text": "PTT box: %s" % ptt_err[:140], "value": ""})
         disk = Disk.failing()
         self.changed("disk_ok", disk is None, "Deck disk writable again",
                      "Deck disk not writable: %s" % (disk[1] if disk else ""), cat="deck")
@@ -1478,7 +1486,7 @@ class Collector(threading.Thread):
             "now": time.time(), "host": deck["hostname"], "deck_ip": deck["iface_ip"],
             "dashboard_uptime": time.time() - START, "mock": False,
             "tiles": tiles, "activity": act, "bridge": bridge, "server": server,
-            "video": video, "deck": deck, "mesh": mesh, "voice": self.voice(), "alerts": active,
+            "video": video, "deck": deck, "mesh": mesh, "voice": voice, "alerts": active,
             "caps": self.control.caps(), "events": self.events.recent(100),
         }
         try:
