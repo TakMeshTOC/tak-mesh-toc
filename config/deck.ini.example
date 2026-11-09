@@ -299,6 +299,7 @@ MUMBLE_CERT_SHA256 =
 # Key it and the deck talks on the talk group picked on the Voice page (PTT BOX TALKS ON ...): the mesh, plus its
 # Mumble channel when bridged. Its headset plays that talk group all the time. auto = used whenever it is plugged
 # in; off = never. Needs VOICE = on, alsa-utils, and the deck user in groups input + audio (install.sh does that).
+# Works without the mesh node too (Mumble only) when its talk group is bridged.
 # DECK_PTT = auto
 # Its talk group until one is picked on the Voice page (blank = the first, TG1). The pick is kept in the state file.
 # DECK_PTT_TG =

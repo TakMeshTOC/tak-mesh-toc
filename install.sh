@@ -248,19 +248,20 @@ DESK="$(xdg-user-dir DESKTOP 2>/dev/null || true)"; [ -n "$DESK" ] && [ "$DESK" 
 APPS="$HOME/.local/share/applications"
 BROWSER=""; for b in chromium-browser chromium; do command -v "$b" >/dev/null 2>&1 && { BROWSER="$b"; break; }; done
 [ -z "$BROWSER" ] && BROWSER="chromium-browser"
-icon() {   # icon FILE NAME COMMENT URL ICONPATH
+icon() {   # icon FILE NAME COMMENT URL ICONPATH PROFILE
   [ "$DRY" = 1 ] && { note "[dry-run] would write $APPS/$1 and $DESK/$1"; return; }
   mkdir -p "$APPS" "$DESK"
-  printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s --app=%s\nIcon=%s\nTerminal=false\nCategories=Network;\n' \
-    "$2" "$3" "$BROWSER" "$4" "$5" > "$APPS/$1"
+  # Each app gets its own browser profile, so a damaged profile in your everyday Chromium can't break Ops or Chat.
+  printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s --user-data-dir=%s --no-first-run --app=%s\nIcon=%s\nTerminal=false\nCategories=Network;\n' \
+    "$2" "$3" "$BROWSER" "$HOME/.config/$6" "$4" "$5" > "$APPS/$1"
   if [ "$ICON" = 1 ] || [ -e "$DESK/$1" ]; then     # a desktop icon you deleted stays deleted (the menu entry stays)
     install -m 755 "$APPS/$1" "$DESK/$1"; note "icon: $2 (menu and desktop)"
   else
     note "icon: $2 (menu only)"
   fi
 }
-if [ "$ICON" = 1 ] || [ -f "$APPS/manet-dashboard-app.desktop" ]; then icon manet-dashboard-app.desktop "TAK MESH TOC Ops" "TAK MESH TOC status dashboard" "http://127.0.0.1:8080" "$CURL/dashboard/icon.svg"; fi
-if [ "$ICON" = 1 ] || [ -f "$APPS/manet-chat.desktop" ]; then icon manet-chat.desktop "TAK MESH TOC Chat" "ATAK chat and voice from the deck" "http://127.0.0.1:8090" "$CURL/chat/icon.svg"; fi
+if [ "$ICON" = 1 ] || [ -f "$APPS/manet-dashboard-app.desktop" ]; then icon manet-dashboard-app.desktop "TAK MESH TOC Ops" "TAK MESH TOC status dashboard" "http://127.0.0.1:8080" "$CURL/dashboard/icon.svg" tmt-ops-browser; fi
+if [ "$ICON" = 1 ] || [ -f "$APPS/manet-chat.desktop" ]; then icon manet-chat.desktop "TAK MESH TOC Chat" "ATAK chat and voice from the deck" "http://127.0.0.1:8090" "$CURL/chat/icon.svg" tmt-chat-browser; fi
 if [ "$KIOSK" = 1 ] || [ -f "$HOME/.config/autostart/manet-dashboard.desktop" ]; then
   KS="$BASE/start_kiosk.sh"
   if [ "$DRY" = 1 ]; then note "[dry-run] would write $KS and point the login autostart at it"

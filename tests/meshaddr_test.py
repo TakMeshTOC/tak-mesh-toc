@@ -44,6 +44,8 @@ vt = threading.Thread(target=mv.resolve_mesh_addr, args=(vc,), daemon=True); vt.
 check("Voice: auto resolves to the mesh port's address", vc["MESH_ADDR"] == "127.0.0.1", vc)
 vc2 = {"MESH_ADDR": "10.41.0.7", "_MESH_IFACE": "lo"}; mv.resolve_mesh_addr(vc2)
 check("Voice: a fixed address is used as it is", vc2["MESH_ADDR"] == "10.41.0.7")
+vc3 = {"MESH_ADDR": "auto", "_MESH_IFACE": "nosuch0"}; t0 = time.time(); mv.resolve_mesh_addr(vc3)
+check("Voice: no node yet = no wait (Mumble starts; the mesh joins later)", vc3["MESH_ADDR"] == "" and vc3.get("_MESH_AUTO") == "1" and time.time() - t0 < 1, vc3)
 cp4 = configparser.ConfigParser(interpolation=None, strict=False)
 cp4.read_string(open(PKG + "/config/deck.ini.example").read())
 check("deck.ini.example: MESH_ADDR = auto", cp4.get("deck", "MESH_ADDR").strip() == "auto")

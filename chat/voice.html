@@ -114,10 +114,14 @@ main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px 18px 24px; align
 .lrow .l { flex: 0 0 52px; text-align: right; }
 .lrow.blocked .w { color: var(--amber); }
 #down { display: none; margin: 16px 18px 0; border: 1px solid var(--amber); color: var(--amber); padding: 10px 14px; }
+#nomesh { margin: 16px 18px 0; border: 1px solid var(--line2); border-left: 3px solid var(--amber); color: var(--g); padding: 10px 14px; font-size: .9em; }
+#nomesh[hidden] { display: none; }
+#nomesh b { color: var(--amber); font-family: var(--cond); letter-spacing: .1em; }
 .hint { color: var(--dim); font-size: .85em; padding: 0 18px 18px; }
 .hint code { font-family: var(--mono); color: var(--g); }
 h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h1 .sub { color: var(--dim); font-weight: 600; }
 /* PTT box on the deck (approved mockup 2026-11-08) */
+.pttrow[hidden], .pill[hidden] { display: none; }   /* display:flex would otherwise beat the hidden attribute */
 .pill.ptt::before { content: "\1F399\FE0E  "; }
 .pttrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #0f151c; }
 .pttrow .lab { font-family: var(--cond); font-weight: 600; font-size: .85em; letter-spacing: .14em; color: var(--dim); }
@@ -143,6 +147,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
   </div>
 </header>
 <div id="down" role="status"></div>
+<div id="nomesh" role="status" hidden><b>NO MESH NODE</b> &nbsp;<span id="nomeshtx"></span></div>
 <main>
   <section id="list" aria-label="Talk groups">
     <div class="lhead"><span>TALK GROUPS</span><span id="group"></span></div>
@@ -193,9 +198,14 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     }
     const groups = v.groups || [];
     $("group").textContent = v.mesh_group ? "mesh " + v.mesh_group : "";
+    const waiting = !!(v.running && v.mesh_state === "waiting");
+    $("nomesh").hidden = !waiting;
+    if (waiting) $("nomeshtx").textContent = "on " + (v.mesh_iface || "eth0") + " yet: Mumble only. Talk groups bridged to Mumble still work, " +
+      "the PTT box too. Plug in the node and the mesh joins in by itself.";
     if (v.running) {
       const nodes = new Set(); groups.forEach(g => (g.mesh || []).forEach(m => nodes.add(m.ip)));
-      pill("pmesh", "MESH VOICE · " + nodes.size + " ON", nodes.size ? "ok" : "info");
+      if (waiting) pill("pmesh", "MESH VOICE · NO NODE", "warn");
+      else pill("pmesh", "MESH VOICE · " + nodes.size + " ON", nodes.size ? "ok" : "info");
       const bridged = groups.filter(g => g.bridged), up = bridged.filter(g => g.mumble_up);
       const rtt = up.map(g => g.rtt_ms).filter(x => x != null);
       if (!bridged.length) pill("pmum", "MUMBLE · NOT BRIDGED", "info");
@@ -241,6 +251,11 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
     if (ptt.error) { val.textContent = ptt.error; val.className = "val warn"; }
     else if (!ptt.present) { val.textContent = "not plugged in · talks on " + ptt.tg + " when it is"; val.className = "val"; }
     else if (ptt.busy) { val.textContent = "waiting: " + ptt.busy + " is talking on " + ptt.tg; val.className = "val warn"; }
+    else if (v.mesh_state === "waiting") {
+      const t = (v.groups || []).find(x => x.name === ptt.tg) || {};
+      if (t.bridged && t.mumble_up) { val.textContent = "plugged in · Mumble only (no mesh node) · headset hears " + ptt.tg; val.className = "val ok"; }
+      else { val.textContent = "no mesh node, and " + ptt.tg + " is not " + (t.bridged ? "linked to Mumble" : "bridged") + ": nobody would hear you"; val.className = "val warn"; }
+    }
     else { val.textContent = "plugged in · headset hears " + ptt.tg; val.className = "val ok"; }
     const mine = g.name === ptt.tg, b = $("pttbtn"), can = !!(v && v.running && v.control);
     b.setAttribute("aria-pressed", mine);

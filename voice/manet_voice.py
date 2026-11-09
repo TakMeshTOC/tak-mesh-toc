@@ -8,6 +8,8 @@
   no echo, no backlog: audio never returns to its source, and late audio is dropped, never replayed.
   monitoring       every talk group port is watched; TALKGROUPS are bridged from the start, the rest can be
                    switched on from the Voice page. The page can also play one talk group on the deck.
+  no mesh node     Mumble starts at once; the mesh joins in by itself when the node is plugged in (MESH_ADDR = auto),
+                   so bridged talk groups and the PTT box work on Mumble alone in the meantime.
   PTT box          a PTT box plugged into the deck (DECK_PTT = auto) talks on the talk group picked on the Voice
                    page (mesh, plus Mumble when bridged) and plays that talk group in its headset (deckptt.py).
 Config: [voice] in deck.ini. Standard library plus the system's libopus.
@@ -337,6 +339,8 @@ class TalkGroup:
         self._send_rtp(self.enc.encode(frame), "mumble_to_mesh")
 
     def _send_rtp(self, opus, stat):
+        if self.gw.tx is None:
+            return                                  # no mesh node yet: Mumble only
         pkt = build_rtp(self.seq, self.ts, self.ssrc, opus, marker=self.first_out)
         self.first_out = False
         self.seq = (self.seq + 1) & 0xFFFF
@@ -439,7 +443,9 @@ class Gateway:
     def __init__(self, cfg):
         self.cfg = cfg
         self.group = cfg["MESH_GROUP"].strip()
-        self.mesh_addr = cfg["MESH_ADDR"].strip()
+        self.mesh_addr = cfg["MESH_ADDR"].strip()      # "" = no mesh node yet: Mumble only until attach_mesh()
+        self.mesh_iface = cfg.get("_MESH_IFACE", "")
+        self.mesh_auto = bool(cfg.get("_MESH_AUTO"))
         self.hang = int(cfg["HANG_MS"]) / 1000.0
         self.max_talk = float(cfg["MAX_TALK_S"])
         self.accept_pt = {int(x) for x in cfg["MESH_PAYLOAD_TYPES"].replace(" ", "").split(",") if x.isdigit()}
@@ -466,14 +472,30 @@ class Gateway:
         if cfg.get("DECK_PTT", "auto").strip().lower() not in ("off", "0", "no", "false", ""):
             self.deck = DeckPTT(self, cfg)
         self.sel = selectors.DefaultSelector()
+        self.tx = None
+        if self.mesh_addr:
+            self.attach_mesh(self.mesh_addr)
+
+    def attach_mesh(self, addr):
+        """Join the talk groups on the mesh port's address (at start, or later when the node is plugged in)."""
+        cfg = self.cfg
         tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(self.mesh_addr))
+        tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(addr))
         tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, int(cfg["MESH_TTL"]))
         tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1 if cfg["MESH_LOOP"] == "1" else 0)
-        self.tx = tx
+        self.mesh_addr = addr
         for g in self.groups:
             self.sel.register(self._rx(g.port), selectors.EVENT_READ, (g, "rtp"))
             self.sel.register(self._rx(g.port + 1), selectors.EVENT_READ, (g, "rtcp"))
+        self.tx = tx
+
+    def mesh_state(self):
+        """"up", or "waiting" (no mesh node: no address yet, or the auto port lost its address)."""
+        if self.tx is None:
+            return "waiting"
+        if self.mesh_auto and self.mesh_iface and apply_deck and not iface_ipv4(self.mesh_iface):
+            return "waiting"
+        return "up"
 
     def _rx(self, port):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -486,6 +508,11 @@ class Gateway:
 
     def mesh_loop(self):
         while not self.stop.is_set():
+            if self.tx is None:                       # no mesh yet: keep the floors ticking (Mumble, PTT box)
+                self.stop.wait(0.1)
+                for g in self.groups:
+                    g.tick()
+                continue
             for key, _ in self.sel.select(timeout=0.1):
                 g, kind = key.data
                 try:
@@ -499,6 +526,7 @@ class Gateway:
     def write_status(self):
         path = os.path.expanduser(self.cfg["STATUS_FILE"])
         st = {"schema": 1, "ts": time.time(), "mesh_group": self.group, "mumble": self.cfg["MUMBLE"],
+              "mesh_state": self.mesh_state(), "mesh_iface": self.mesh_iface or "",
               "groups": [g.status() for g in self.groups],
               "deck_ptt": self.deck.status() if self.deck else {"enabled": False}}
         try:
@@ -557,7 +585,8 @@ class Gateway:
                 g.client.close()
         for key in list(self.sel.get_map().values()):
             key.fileobj.close()
-        self.tx.close()
+        if self.tx is not None:
+            self.tx.close()
 
 
 def gone(sock):
@@ -675,27 +704,44 @@ def load_cfg(path):
 
 
 def resolve_mesh_addr(cfg):
-    """MESH_ADDR = auto: wait for the mesh port's address, use it, and restart (systemd starts Voice again) when
-    the node hands out a new one. A fixed address is used as it is."""
+    """MESH_ADDR = auto: the mesh port's address now, or "" when the node isn't plugged in yet (Voice starts anyway,
+    Mumble only). A fixed address is used as it is."""
     if not apply_deck or not is_auto(cfg["MESH_ADDR"]):
         return
-    iface, told = cfg.get("_MESH_IFACE", "eth0"), False
-    while True:
-        ip = iface_ipv4(iface)
-        if ip:
-            break
-        if not told:
-            log.warning("MESH_ADDR auto: %s has no address yet (node unplugged or off?); waiting", iface)
-            told = True
-        time.sleep(3)
-    cfg["MESH_ADDR"] = ip
-    log.info("MESH_ADDR auto: %s on %s (followed if the node hands out a new one)", ip, iface)
+    iface = cfg.get("_MESH_IFACE", "eth0")
+    cfg["_MESH_AUTO"] = "1"
+    cfg["MESH_ADDR"] = iface_ipv4(iface) or ""
+    if cfg["MESH_ADDR"]:
+        log.info("MESH_ADDR auto: %s on %s (followed if the node hands out a new one)", cfg["MESH_ADDR"], iface)
+    else:
+        log.warning("MESH_ADDR auto: %s has no address yet (node unplugged or off?): Mumble only until it has one", iface)
+
+
+def follow_mesh(gw, every=3.0):
+    """MESH_ADDR = auto: join the mesh when the node is plugged in; restart Voice (systemd starts it again) when the
+    node hands out a new address."""
+    if not gw.mesh_auto or not apply_deck:
+        return
+    iface = gw.mesh_iface or "eth0"
 
     def changed(old, new):
         log.warning("Mesh address on %s is now %s (was %s): restarting Voice to follow it", iface, new, old)
         logging.shutdown()
         os._exit(3)
-    watch_mesh_addr(iface, ip, changed)
+
+    def wait_then_watch():
+        while not gw.stop.is_set() and gw.tx is None:
+            ip = iface_ipv4(iface)
+            if ip:
+                try:
+                    gw.attach_mesh(ip)
+                    log.info("Mesh node plugged in: %s on %s; the mesh joins the talk groups", ip, iface)
+                except OSError as e:
+                    log.warning("Mesh port %s (%s): %s; trying again", iface, ip, e)
+            gw.stop.wait(every)
+        if gw.tx is not None and not gw.stop.is_set():
+            watch_mesh_addr(iface, gw.mesh_addr, changed)
+    threading.Thread(target=wait_then_watch, name="mesh-follow", daemon=True).start()
 
 
 def main():
@@ -716,7 +762,8 @@ def main():
     if not cfg["MUMBLE_CERT_SHA256"].strip():
         log.warning("MUMBLE_CERT_SHA256 is empty: the Mumble server's certificate is not checked")
     g = Gateway(cfg)
-    log.info("voice: mesh %s on %s, watching %s; bridging %s to Mumble %s", g.group, g.mesh_addr,
+    follow_mesh(g)
+    log.info("voice: mesh %s on %s, watching %s; bridging %s to Mumble %s", g.group, g.mesh_addr or "(no mesh node yet)",
              ", ".join(t.name for t in g.groups), ", ".join("%s<->%s" % (t.name, t.channel) for t in g.groups if g.wanted[t.port]) or "nothing",
              cfg["MUMBLE"])
     try:

@@ -40,7 +40,7 @@ announced there; one sent from the server is fetched by the deck and served to t
 | **Chat** | ATAK chat on the deck's own screen, mesh and server, including DMs, quick keys and report forms |
 | **Ops** | A status dashboard: server link, every mesh node with its health and radio link speed (found by itself), traffic, video, GPS, voice and alerts, plus a setup wizard |
 | **Video** | Every stream on the deck shows on the TAK map as a VIDEO marker at the person streaming: tap it, Play Video (works in iTAK on a mesh with no internet). Optionally, mesh phones' streams are copied to your server so server users can watch them too |
-| **Voice** *(optional)* | Push-to-talk talk groups on the mesh &#8644; Mumble channels on your server |
+| **Voice** *(optional)* | Push-to-talk talk groups on the mesh &#8644; Mumble channels on your server. Plug a USB PTT box into the deck and the operator talks too, through a tactical headset. With no mesh node plugged in, voice keeps working on Mumble alone |
 | **`meshtoc`** | One command for check, logs, restart and rollback, with a watchdog for a frozen deck |
 
 <p align="center">
@@ -48,7 +48,7 @@ announced there; one sent from the server is fetched by the deck and served to t
   <img src="images/chat.png" alt="TAK MESH TOC Chat" width="49%">
 </p>
 <p align="center">
-  <img src="images/voice.png" alt="TAK MESH TOC Voice: mesh talk groups and Mumble channels" width="70%">
+  <img src="images/voice.png" alt="TAK MESH TOC Voice: mesh talk groups, Mumble channels and the deck's PTT box" width="70%">
 </p>
 
 ## Quick start

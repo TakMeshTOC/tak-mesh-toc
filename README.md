@@ -187,6 +187,9 @@ goes onto the mesh the way OpenMANET sends it.
   The headset plays that talk group all the time and never your own voice. The button is taken over, so it never
   changes the deck's volume. Found within a few seconds of plugging in; the header pill says READY, TALKING, BUSY or
   NOT PLUGGED IN, and only real problems reach Ops. `DECK_PTT = off` in `[voice]` turns it off.
+- **No mesh node? Mumble still works.** With `MESH_ADDR = auto`, voice starts without waiting for the node: talk
+  groups bridged to Mumble and the PTT box work over the server link alone (the VOICE page says NO MESH NODE).
+  Plug the node in and the mesh joins the talk groups by itself, no restart.
 - **Deck screen only:** listening, the switches and the PTT box talk group work on the deck's own screen. From another
   device the VOICE page is read-only, so nobody on the mesh can change your bridging or pull an audio stream over the radio.
 
@@ -313,6 +316,7 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ~/bridge_status.json  ~/bridge_outbox.jsonl  ~/deck_chat_log.jsonl  ~/dashboard_events.jsonl  ~/dashboard_history.jsonl
 ~/voice_status.json  ~/voice_bridges.json   voice: who is talking, which talk groups are switched on (nothing is recorded)
 ~/voice_deckptt.json                         the talk group the PTT box on the deck talks on
+~/.config/tmt-ops-browser  ~/.config/tmt-chat-browser   the Ops and Chat icons' own browser profiles
 ~/mesh_status.json                           Ops' mesh summary for the DECK status line
 ~/file_cache/                                files from the server waiting for mesh phones (12 h, 200 MB at most)
 ```

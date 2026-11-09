@@ -444,6 +444,9 @@ def check_voice(cp):
     elif st is None or age > 10:
         line("fail", "Voice: gateway", "not running (meshtoc logs voice)")
     else:
+        if st.get("mesh_state") == "waiting":
+            line("info", "Voice: mesh", "no mesh node on %s yet: Mumble only (bridged talk groups and the PTT box still work); "
+                 "the mesh joins in when the node is plugged in" % (st.get("mesh_iface") or viface))
         for g in st.get("groups") or []:
             if not g.get("bridged"):
                 continue

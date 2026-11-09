@@ -357,6 +357,13 @@ if sync_playwright:
               "TALKING" in txt("#pptt") and "DECK (PTT box)" in txt("#dbody"), (txt("#pptt"), txt("#dbody")[:120]))
         key(0); pg.wait_for_timeout(300)
         pg.screenshot(path=W + "/voice_ptt.png")
+        vis = lambda sel: pg.evaluate("getComputedStyle(document.querySelector(%r)).display !== 'none'" % sel)
+        gw.deck.stop.set(); real_status = gw.deck.status
+        gw.deck.status = lambda: {"enabled": False}; gw.write_status(); pg.wait_for_timeout(1500)
+        check("Voice page: DECK_PTT off: no PTT row and no pill (really hidden, not just marked)", not vis("#pttrow") and not vis("#pptt"),
+              (vis("#pttrow"), vis("#pptt")))
+        gw.deck.status = real_status; gw.deck.stop.clear(); threading.Thread(target=gw.deck.run, daemon=True).start()
+        pg.wait_for_timeout(1500)
         unplug(); pg.wait_for_timeout(4500)
         check("Voice page: unplugged: NOT PLUGGED IN", "NOT PLUGGED IN" in txt("#pptt") and not errs, (txt("#pptt"), errs))
         br.close()

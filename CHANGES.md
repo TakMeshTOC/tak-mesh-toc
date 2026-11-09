@@ -1,5 +1,20 @@
 # Changes
 
+## 3.1.24: voice without the mesh node
+- **Mumble starts at once, without the mesh node.** Voice used to wait for the node to give the deck an address, so
+  with no node plugged in there was no voice at all, not even to Mumble. Now bridged talk groups link to Mumble
+  straight away and the PTT box on the deck works over the server link alone. When the node is plugged in, the mesh
+  joins the talk groups by itself (no restart); a new address from the node still restarts Voice to follow it.
+- **VOICE page:** MESH VOICE · NO NODE and a plain NO MESH NODE note (Mumble only) instead of "voice service stopped
+  ... s ago"; the PTT box row says "Mumble only", or warns when its talk group isn't on Mumble ("nobody would hear
+  you"). `meshtoc check` says the same.
+- **Ops and Chat icons get their own browser profile** (`~/.config/tmt-ops-browser`, `~/.config/tmt-chat-browser`),
+  like the full-screen kiosk already had. A damaged profile in your everyday Chromium ("Profile error occurred")
+  no longer pops up over Ops and Chat. Rewritten by install.sh; nothing else changes.
+- **Fix:** the PTT BOX row (an empty box) showed on the VOICE page when voice wasn't running or the PTT box was off.
+- Tests: `nomesh_test.py` (no node, plug in, unplug, page, check), `meshaddr_test.py` (no wait), `deckptt_test.py`
+  (the row is really hidden).
+
 ## 3.1.23: PTT box on the deck
 - **The deck operator can talk.** Plug a USB PTT box into the deck (a CM108 sound card with PTT wired to its
   volume-down button, a tactical headset and PTT on it). Key it and the deck talks on the talk group picked on the
