@@ -1,5 +1,10 @@
 # Changes
 
+## 3.1.25: mic icon on the deck
+- **VOICE page:** the mic on the PTT BOX pill and the talk group badge showed as an empty box on the deck (it has no
+  emoji font). The page now draws the mic itself, in the pill's colour. Nothing else changes.
+- Tests: `deckptt_test.py` checks the page has no emoji left and that both mic icons are drawn.
+
 ## 3.1.24: voice without the mesh node
 - **Mumble starts at once, without the mesh node.** Voice used to wait for the node to give the deck an address, so
   with no node plugged in there was no voice at all, not even to Mumble. Now bridged talk groups link to Mumble

@@ -8,7 +8,7 @@
 Skipped (exit 0) when mumble-server or libopus is not installed.
 argv: [package dir]
 """
-import json, math, os, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
+import json, math, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
 
 PKG = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), ".."))
 sys.path[:0] = [PKG + "/voice", PKG + "/common", PKG + "/dashboard"]
@@ -56,6 +56,10 @@ if oc.LOAD_ERROR or not shutil.which("mumble-server"):
     sys.exit(0 if all(res) else 1)
 import manet_voice as mv
 from mumbleclient import MumbleClient
+
+_vp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "chat", "voice.html"), encoding="utf-8").read()
+_emo = [c for c in _vp if ord(c) > 0xFFFF or ord(c) == 0xFE0E] + re.findall(r"&#(?:1[2-9]\d{4}|65038);|\\1F[0-9A-Fa-f]{3}", _vp)
+check("voice.html: no emoji (the deck has no emoji font, they show as empty boxes)", not _emo, _emo[:5])
 
 def free_port():
     with socket.socket() as s:
@@ -347,6 +351,12 @@ if sync_playwright:
         check("Voice page: header pill PTT BOX · TG2 · READY, badge on TG2's card",
               "PTT BOX · TG2 · READY" in txt("#pptt") and "PTT BOX" in txt('.tg[data-tg="TG2"]') and "PTT BOX" not in txt('.tg[data-tg="TG1"]') and not errs,
               (txt("#pptt"), errs))
+        mic = pg.evaluate("""() => { const b = document.querySelector('.tg[data-tg="TG2"] .pbadge .mic'), p = document.querySelector('#pptt');
+            const pb = getComputedStyle(p, '::before'), bb = b && getComputedStyle(b), m = s => (s.maskImage || s.webkitMaskImage || '');
+            return {pill: m(pb).includes('svg') && parseFloat(pb.width) > 4 && pb.backgroundColor === getComputedStyle(p).color,
+                    badge: !!b && m(bb).includes('svg') && b.getBoundingClientRect().width > 4 && bb.backgroundColor === getComputedStyle(b.parentNode).color}; }""")
+        check("Voice page: the mic icon is drawn by the page (pill + badge, in the text colour), no emoji font needed",
+              mic["pill"] and mic["badge"], mic)
         pg.click('.tg[data-tg="TG1"]'); pg.wait_for_timeout(300)
         check("Voice page: on TG1 the row offers PTT BOX: TALK ON TG1", "TALK ON TG1" in txt("#pttbtn") and "plugged in" in txt("#pttval"), (txt("#pttbtn"), txt("#pttval")))
         pg.click("#pttbtn"); pg.wait_for_timeout(1800)

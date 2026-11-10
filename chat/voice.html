@@ -122,7 +122,11 @@ main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px 18px 24px; align
 h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h1 .sub { color: var(--dim); font-weight: 600; }
 /* PTT box on the deck (approved mockup 2026-11-08) */
 .pttrow[hidden], .pill[hidden] { display: none; }   /* display:flex would otherwise beat the hidden attribute */
-.pill.ptt::before { content: "\1F399\FE0E  "; }
+/* mic icon drawn in CSS: the deck has no emoji font, so U+1F399 showed as an empty box (3.1.25) */
+.mic, .pill.ptt::before { display: inline-block; width: 1em; height: 1em; vertical-align: -.15em; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='5.5' y='1' width='5' height='9' rx='2.5'/%3E%3Cpath d='M3.5 7.5a4.5 4.5 0 0 0 9 0' fill='none' stroke='%23000' stroke-width='1.5'/%3E%3Crect x='7.25' y='12' width='1.5' height='2.5'/%3E%3Crect x='5' y='14' width='6' height='1.5' rx='.75'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='5.5' y='1' width='5' height='9' rx='2.5'/%3E%3Cpath d='M3.5 7.5a4.5 4.5 0 0 0 9 0' fill='none' stroke='%23000' stroke-width='1.5'/%3E%3Crect x='7.25' y='12' width='1.5' height='2.5'/%3E%3Crect x='5' y='14' width='6' height='1.5' rx='.75'/%3E%3C/svg%3E") center / contain no-repeat; }
+.pill.ptt::before { content: ""; margin-right: 6px; }
+.tg .pbadge .mic { margin-right: 4px; }
 .pttrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #0f151c; }
 .pttrow .lab { font-family: var(--cond); font-weight: 600; font-size: .85em; letter-spacing: .14em; color: var(--dim); }
 .pttrow .val { font-family: var(--mono); font-size: .8em; color: var(--dim); }
@@ -222,7 +226,7 @@ h1 { display: flex; align-items: center; gap: 10px; } h1 .logo { flex: none; } h
       const cls = "tg" + (t ? " talking" : "") + (!g.bridged ? " off" : "") + (g.bridged && g.mumble_up && !g.in_channel && !t ? " warnch" : "");
       return '<button type="button" class="' + cls + '" data-tg="' + esc(g.name) + '" aria-pressed="' + (g.name === sel) + '"><span class="bar"></span><span class="in">' +
         '<span class="r1"><span class="nm">' + esc(g.name) + (g.name === listenTg ? '<span class="badge">&#9835; LISTENING</span>' : '') +
-        (ptt.enabled && g.name === ptt.tg ? '<span class="pbadge">&#127897;&#65038; PTT BOX</span>' : '') + '</span><span class="st">' + esc(state) + '</span></span>' +
+        (ptt.enabled && g.name === ptt.tg ? '<span class="pbadge"><i class="mic"></i>PTT BOX</span>' : '') + '</span><span class="st">' + esc(state) + '</span></span>' +
         '<span class="map">:' + g.port + ' ↔ ' + (g.bridged ? 'Mumble "' + esc(g.channel) + '"' : 'not bridged') + '</span>' +
         '<span class="cnt"><span>' + (g.mesh || []).length + ' on mesh</span><span>' + (g.mumble || []).length + ' on Mumble</span><span>' + esc(right) + '</span></span>' +
         '</span></button>';
