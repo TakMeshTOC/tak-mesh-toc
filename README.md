@@ -1,9 +1,9 @@
 # TAK MESH TOC
 
-**A portable TAK operations center for a mesh network.** TAK MESH TOC connects ATAK phones on a mesh radio network
-(for example OpenMANET HaLow) to a TAK server, through one small Linux computer: the "deck". It carries positions,
-chat, markers, DMs and push-to-talk voice between the mesh and the server, and shows the whole picture on the
-deck's own screen.
+**A portable TAK operations center for a mesh network.** Take your ATAK team somewhere with no cell service, and still
+see and talk to everyone on your TAK server. TAK MESH TOC connects ATAK phones on a mesh radio network (for example
+OpenMANET HaLow) to a TAK server through one small Linux computer, the "deck". It carries positions, chat, markers,
+DMs and push-to-talk voice between the mesh and the server, and shows the whole picture on the deck's own screen.
 
 The phones on the mesh need no internet, no server account and no certificate. They talk ATAK's normal mesh
 multicast, and the deck carries their traffic to the server and back. Phones connected to the server see the
@@ -14,10 +14,15 @@ mesh phones, and the mesh phones see them.
                                                          (TAK MESH TOC)                       (e.g. OpenTAKServer)
 ```
 
-TAK MESH TOC was called MANET_MESH_BRIDGE before version 3.0. Installed decks upgrade in place: the folder
-(`~/manet_mesh_bridge`), the services and `deck.ini` stay as they are, and the old command name still works.
+## Start here
+Most people only need these three steps. The rest of this guide is reference for when you want to change something.
+1. Copy `TAK_MESH_TOC.zip` to the deck and run `unzip TAK_MESH_TOC.zip && cd TAK_MESH_TOC && bash install.sh --icon`
+   as your normal user.
+2. Click the **TAK MESH TOC Ops** icon. The setup wizard asks for the deck's data package (made in your TAK server,
+   the same kind you'd give a phone), its callsign and a few choices, and tests the connection.
+3. When the wizard finishes it runs the full check. Anything to fix shows up there in plain words.
 
-It is four programs that run as services on the deck:
+Under the hood it is four programs that run as services on the deck:
 
 | Program | What it does | Service | Page |
 |---|---|---|---|
@@ -60,9 +65,12 @@ Open **http://127.0.0.1:8080** in the deck's browser (or click the TAK MESH TOC 
 
 Setup opens only on the deck's own screen. Run it again any time: Ops › SETUP › RUN SETUP AGAIN.
 
+<details>
+<summary><b>Setup by hand and certificates</b> (only if you skip the wizard)</summary>
+
 ### Setup by hand
 Or open `~/manet_mesh_bridge/deck.ini` and set the two things only you know:
-1. **Your server:** `COT_URL` in `[bridge]`, plus the certificate lines (see Certificates).
+1. **Your server:** `COT_URL` in `[bridge]`, plus the certificate lines (see Certificates, below).
 2. **The deck's mesh address:** nothing to do. `MESH_ADDR = auto` in `[deck]` uses whatever address `eth0` has and
    follows it (3.1.7 or newer). To pin one instead, set the IP there and give the deck a static lease on the node.
 
@@ -74,7 +82,7 @@ meshtoc check
 `check` tests everything and says what to fix: files, services, config, certificates, the server link, the mesh
 address, GPS, the clock, and DMs.
 
-## Certificates
+### Certificates
 The setup wizard does all of this for you. By hand: the deck connects to the server like a phone, with its own
 client certificate. Make one for the deck on your
 server (in OpenTAKServer, the same way as for a phone) and copy the data package `.zip` to the deck. OpenTAKServer
@@ -96,6 +104,8 @@ PYTAK_TLS_CLIENT_KEY = ~/certs/deck.key
 PYTAK_TLS_CLIENT_CAFILE = ~/certs/ca.pem
 ```
 If you reach the server by a VPN address that isn't in its certificate, also add `PYTAK_TLS_DONT_CHECK_HOSTNAME = 1`.
+
+</details>
 
 ## Direct messages (OpenTAKServer)
 DMs from **mesh phones to server people** work through the deck. DMs from **server people to mesh phones** also need a
@@ -324,6 +334,8 @@ The command's old name, `manet_mesh_bridge`, does the same thing.
 ## Upgrade, roll back, remove
 - **Upgrade:** unzip the new version and run `bash install.sh`. Your `deck.ini` is kept.
   - The installer refuses to downgrade, and refuses a damaged package.
+  - TAK MESH TOC was called MANET_MESH_BRIDGE before version 3.0. Those decks upgrade in place: the folder
+    (`~/manet_mesh_bridge`), the services and `deck.ini` stay as they are, and the old command name still works.
 - **Roll back:** `meshtoc rollback`.
 - **Remove:** `bash ~/manet_mesh_bridge/current/uninstall.sh`. Add `--purge` to delete the config too. Message logs
   are always kept.

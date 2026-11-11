@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <b>A portable TAK operations center for a mesh network.</b><br>
-  One small Linux computer joins ATAK and iTAK phones on a mesh radio network to your TAK server:
-  positions, chat, markers, routes, DMs, pictures and data packages, push-to-talk voice and live video, both ways.
+  <b>Take your ATAK team somewhere with no cell service, and still see and talk to everyone back on your TAK server.</b><br>
+  One small Linux computer (the "deck") joins the phones on your mesh radios to your TAK server:
+  positions, chat, photos, push-to-talk voice and video, both ways.
   The phones on the mesh need no internet, no server account and no certificate.
 </p>
 
@@ -18,30 +18,47 @@
 
 ---
 
+## What it does
+
+- **Everyone on one map.** Phones on the mesh show up on your TAK server, and people on the server show up on the mesh phones.
+- **Chat and direct messages** between the mesh and the server, plus chat on the deck's own screen.
+- **Share photos and data packages** from a mesh phone to the server, and back.
+- **Push-to-talk voice.** Talk groups on the mesh are linked to channels on a Mumble server, and the deck operator can talk too with a headset.
+- **Live video.** Streams show on the TAK map as markers you tap to watch.
+- **Keeps working when the link drops.** The mesh carries on by itself, and the deck holds messages until the server is back.
+
+**Who it's for:** teams that already use ATAK or iTAK and need to work where cell coverage is weak or gone: search and
+rescue, event safety, emergency communications, off-grid groups, and anyone building their own mesh network.
+
 ## How it works
 
 <p align="center"><img src="images/architecture.png" alt="How TAK MESH TOC works: the mesh, the deck and the server" width="100%"></p>
 
-ATAK and iTAK phones talk to each other on the mesh with TAK's normal multicast. The **deck** (a Raspberry Pi wired to a mesh
-node) carries that traffic to your TAK server over one TLS link and brings the server's traffic back onto the mesh.
-People on the server see the mesh phones, and the mesh phones see them. Only the deck needs a link to the server;
-if that link drops, the mesh keeps working on its own and the deck holds chats until it is back.
+The phones talk to each other over the mesh radios, just as ATAK normally does on a local network. The deck is wired
+to one mesh node and also has a link to your TAK server (Wi-Fi, a hotspot or a VPN). It passes traffic between the two,
+so only the deck ever needs that link.
 
-The deck is the only box on both networks: it readdresses map traffic and carries files, so neither side ever needs a
-route to the other. A photo or data package shared from a mesh phone is fetched by the deck, uploaded to your server and
-announced there; one sent from the server is fetched by the deck and served to the mesh phones it was meant for.
+## What you need
 
-## What you get
+| | What | Tested with |
+|---|---|---|
+| **The deck** | A small Linux computer with two network connections: a cable to a mesh node, and Wi-Fi or a hotspot to reach your server | Raspberry Pi 4 and 5, Raspberry Pi OS 12 |
+| **Mesh radios** | Mesh nodes your phones connect to, which pass ATAK's local traffic | OpenMANET HaLow |
+| **A TAK server** | Plus one data package for the deck, made the same way you'd make one for a phone | OpenTAKServer 1.7 |
+| **Phones** | ATAK (Android) or iTAK (iPhone) | |
+| *Optional* | A USB GPS, a Mumble server for voice, a USB push-to-talk headset box, MediaMTX for video | |
 
-| Part | What it does |
-|---|---|
-| **Bridge** | Mesh &#8644; server: positions, chat, markers, routes and drawings, private DMs both ways, the deck's own GPS position. Phones can move between the mesh and the server and stay reachable |
-| **Files** | Pictures, data packages and KML/KMZ overlays both ways (ATAK and iTAK), up to 5 MB, one at a time, SHA-256 checked. Runs in the background; problems show in Ops |
-| **Chat** | ATAK chat on the deck's own screen, mesh and server, including DMs, quick keys and report forms |
-| **Ops** | A status dashboard: server link, every mesh node with its health and radio link speed (found by itself), traffic, video, GPS, voice and alerts, plus a setup wizard |
-| **Video** | Every stream on the deck shows on the TAK map as a VIDEO marker at the person streaming: tap it, Play Video (works in iTAK on a mesh with no internet). Optionally, mesh phones' streams are copied to your server so server users can watch them too |
-| **Voice** *(optional)* | Push-to-talk talk groups on the mesh &#8644; Mumble channels on your server. Plug a USB PTT box into the deck and the operator talks too, through a tactical headset. With no mesh node plugged in, voice keeps working on Mumble alone |
-| **`meshtoc`** | One command for check, logs, restart and rollback, with a watchdog for a frozen deck |
+## Get started
+
+1. Download **`TAK_MESH_TOC.zip`** from [Releases](../../../releases) and copy it to the deck.
+2. On the deck, open a terminal and paste:
+   ```
+   unzip TAK_MESH_TOC.zip && cd TAK_MESH_TOC && bash install.sh --icon
+   ```
+3. Click the **TAK MESH TOC Ops** icon. The setup wizard asks for the deck's data package, its callsign and a few
+   choices, then checks that everything works.
+
+No internet is needed to install: everything it uses is in the zip.
 
 <p align="center">
   <img src="images/ops_dashboard.png" alt="TAK MESH TOC Ops dashboard" width="49%">
@@ -51,22 +68,26 @@ announced there; one sent from the server is fetched by the deck and served to t
   <img src="images/voice.png" alt="TAK MESH TOC Voice: mesh talk groups, Mumble channels and the deck's PTT box" width="70%">
 </p>
 
-## Quick start
+## What's included
 
-1. Download **`TAK_MESH_TOC.zip`** from [Releases](../../../releases) and copy it to the deck.
-2. On the deck, as your normal user:
-   ```
-   unzip TAK_MESH_TOC.zip && cd TAK_MESH_TOC
-   bash install.sh --icon
-   ```
-3. Open **http://127.0.0.1:8080** (or the TAK MESH TOC Ops icon). The setup wizard walks you through the rest.
+| Part | What it does |
+|---|---|
+| **Bridge** | Joins the mesh and the server: positions, chat, markers, routes, drawings and private messages. Phones can move between the mesh and the server and stay reachable |
+| **Files** | Photos, data packages and map overlays both ways, for ATAK and iTAK |
+| **Chat** | ATAK chat on the deck's screen, mesh and server, with quick keys and report forms |
+| **Ops** | A status screen for the whole setup: server link, every mesh node and its signal, traffic, video, GPS, voice and alerts, plus the setup wizard |
+| **Video** | Every stream on the deck appears on the TAK map at the person streaming. Optionally copied to your server too |
+| **Voice** *(optional)* | Push-to-talk talk groups on the mesh linked to Mumble channels. Works on Mumble alone when no mesh node is plugged in |
+| **`meshtoc`** | One command to check, restart, read logs or roll back to the last version |
 
-**You need:** a Linux computer with systemd and Python 3.9 or newer (tested on Raspberry Pi 4 with Raspberry Pi OS
-12), a mesh that passes ATAK multicast (tested with OpenMANET HaLow), and a TAK server plus a data package for the
-deck (tested with OpenTAKServer 1.7). Everything it needs is bundled, so installing needs no internet. The deck needs a
-link to your TAK server (for example Tailscale over Wi-Fi or a hotspot); the phones on the mesh need none.
+## More detail
 
-The full guide (install, setup, every setting, DMs, voice, troubleshooting) is in the [README](../README.md).
+The [full guide](../README.md) covers every setting, direct messages, iTAK tips, voice and troubleshooting.
+
+For the technically curious: phones on the mesh use TAK's standard multicast; the deck carries it to the server over a
+single TLS connection with its own client certificate, and rewrites addresses so neither network needs a route to the
+other. Files up to 5 MB are fetched, checked and re-served by the deck. About 800 automated tests run against stand-ins
+for phones, the mesh and the server.
 
 ## Featured in
 
