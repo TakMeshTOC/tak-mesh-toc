@@ -1,5 +1,19 @@
 # Changes
 
+## 3.1.26: three security fixes
+- **Ops no longer shows the deck's addresses to the mesh.** Opened from another device, Ops gave out the TAK server's
+  host and port and the deck's Tailscale address. Those now show on the deck's own screen only; another device sees
+  "shown on the deck only" and the link state (up, down, reachable) as before.
+- **Files from mesh phones are downloaded only from the phone that sent the notice.** The deck used to try whatever
+  address the notice's link named, so any device on the mesh could make the deck fetch an address of its choosing
+  (the deck itself, the Tailscale side). The link's port and path are kept, the address is always the sender's, and
+  redirects are refused.
+- **The voice control port answers only Chat.** A web page open in the deck's browser could reach it and switch a
+  talk group's bridge or the PTT box's talk group. It now needs Chat's header, a loopback Host and no Origin.
+  Nothing changes on the VOICE page.
+- Tests: new `mesh_view_test.py`; `file_relay_test.py` (another machine, a redirect, no sender address) and
+  `voice_test.py` (no header, Origin, another host name).
+
 ## 3.1.25: mic icon on the deck
 - **VOICE page:** the mic on the PTT BOX pill and the talk group badge showed as an empty box on the deck (it has no
   emoji font). The page now draws the mic itself, in the pill's colour. Nothing else changes.

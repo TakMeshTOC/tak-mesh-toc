@@ -261,7 +261,7 @@ class Listen:
         self.pcm, self.status, self.stop = b"", None, False
         h, p = hostport.split(":")
         self.c = http.client.HTTPConnection(h, int(p), timeout=5)
-        self.c.request("GET", path + tg); self.sock = self.c.sock; self.r = self.c.getresponse(); self.status = self.r.status
+        self.c.request("GET", path + tg, headers={"X-Deck": "1"}); self.sock = self.c.sock; self.r = self.c.getresponse(); self.status = self.r.status
         if self.status == 200:
             threading.Thread(target=self._rd, daemon=True).start()
     def _rd(self):
@@ -315,6 +315,17 @@ def chat_post(path, obj, deck=True):
     try:
         with urllib.request.urlopen(rq, timeout=10) as rr: return rr.status, json.loads(rr.read())
     except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b"{}")
+def ctl_raw(method, path, headers, body=None):
+    h, p = CTL.split(":"); c = http.client.HTTPConnection(h, int(p), timeout=5)
+    c.request(method, path, body, headers); r = c.getresponse(); code = r.status; c.close(); return code
+J = {"Content-Type": "application/json"}; ON = json.dumps({"tg": "TG3", "on": True})
+check("control port: a request without Chat's header is refused (a web page on the deck can't switch a bridge or listen)",
+      ctl_raw("POST", "/bridge", J, ON) == 403 and ctl_raw("GET", "/listen?tg=TG1", {}) == 403 and not tg["TG3"].bridged)
+check("control port: a request a browser made for another site (Origin) is refused, even with the header",
+      ctl_raw("POST", "/bridge", dict(J, **{"X-Deck": "1", "Origin": "http://evil.example"}), ON) == 403 and not tg["TG3"].bridged)
+check("control port: a request under another name (DNS rebinding) is refused",
+      ctl_raw("POST", "/bridge", dict(J, **{"X-Deck": "1", "Host": "evil.example:17016"}), ON) == 403
+      and ctl_raw("GET", "/listen?tg=TG1", {"X-Deck": "1", "Host": "evil.example"}) == 403 and not tg["TG3"].bridged)
 av = json.loads(urllib.request.urlopen(CH + "/api/voice").read())
 check("Deck Chat: /api/voice says the deck's screen may control voice", av["running"] and av["control"] is True and "mumble" not in av)
 lc = Listen("TG1", "127.0.0.1:%d" % CHPORT, "/api/voice/listen?tg=")

@@ -1740,6 +1740,33 @@ STATIC = {
     "setup.js": "application/javascript; charset=utf-8",
 }
 CAPTURE_NAME = re.compile(r"^snap_[A-Za-z0-9_.\-]{1,80}\.jpg$")
+HIDDEN = "(hidden)"
+
+
+def hide_addresses(obj, secrets):
+    """A copy of a status with every secret string (the TAK server's and Tailscale's addresses) replaced, wherever
+    it appears: rows, check texts, links. For viewers who are not on the deck's own screen."""
+    if isinstance(obj, dict):
+        return {k: hide_addresses(v, secrets) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [hide_addresses(v, secrets) for v in obj]
+    if isinstance(obj, str):
+        for s in secrets:
+            if s in obj:
+                obj = obj.replace(s, HIDDEN)
+    return obj
+
+
+def status_for_mesh(data):
+    """What /api/status gives another device on the mesh: everything except where the TAK server and the deck's
+    Tailscale are (the server's host and port, the Tailscale address). Those stay on the deck's own screen."""
+    srv = data.get("server") if isinstance(data.get("server"), dict) else {}
+    secrets = sorted({str(s) for s in (srv.get("host"), srv.get("tailscale_ip")) if s and len(str(s)) >= 4},
+                     key=len, reverse=True)
+    out = hide_addresses(data, secrets)
+    if isinstance(out.get("server"), dict):
+        out["server"].update(host="", port=None, tailscale_ip="")
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1815,6 +1842,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = Handler.collector.get()
             data = dict(data)
             data["local"] = self._is_local()
+            if not data["local"]:
+                data = status_for_mesh(data)
             return self._json(data)
         if path == "/api/history":
             if Handler.mock:

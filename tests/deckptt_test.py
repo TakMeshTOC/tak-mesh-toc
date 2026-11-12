@@ -267,7 +267,7 @@ check("busy: keyed while a phone talks: BUSY with the talker's name, the deck is
 
 # 6. pick TG2 through the control port (what the Voice page's button calls)
 def ctl(path, obj):
-    rq = urllib.request.Request("http://%s%s" % (CTL, path), json.dumps(obj).encode(), {"Content-Type": "application/json"})
+    rq = urllib.request.Request("http://%s%s" % (CTL, path), json.dumps(obj).encode(), {"Content-Type": "application/json", "X-Deck": "1"})
     try:
         with urllib.request.urlopen(rq, timeout=5) as r: return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b"{}")

@@ -1709,12 +1709,23 @@ class FileRelay:
                 self._fail(job, (str(exc) or exc.__class__.__name__)[:160])
 
     def _fetch(self, job):
-        """Download from the phone over the mesh: its link, or the same link at the address it came from.
+        """Download from the phone over the mesh: its link's port and path, at the address the notice came from.
         A phone serving its own file over https (ATAK's secure file sharing, port 8443) uses its own self-signed
         certificate; like ATAK itself, the deck doesn't check that certificate for a phone-hosted (peerHosted) file.
         The SHA-256 from the notice is what proves the file is the one that was sent."""
         import hashlib, ssl, urllib.request
-        f, urls = job["f"], [job["f"]["senderUrl"]]
+        f = job["f"]
+        # Only ever from the address the notice came from. The link's host is whatever the notice says, and a notice
+        # is just a packet: without this, any device on the mesh could make the deck fetch any address it can reach
+        # (itself, the Tailscale side). The link's port and path are kept; redirects are refused for the same reason.
+        if not job["peer"]:
+            raise RuntimeError("couldn't download it from the phone: the notice's sender address is unknown")
+        u = urlparse(f["senderUrl"])
+        try:
+            port = (":%d" % u.port) if u.port else ""
+        except ValueError:
+            raise RuntimeError("couldn't download it from the phone: bad port in its link")
+        urls = [u._replace(netloc="%s%s" % (job["peer"], port)).geturl()]
         ctx = None
         if f["senderUrl"].lower().startswith("https://"):
             if f.get("peerHosted", "").lower() == "true":
@@ -1725,15 +1736,16 @@ class FileRelay:
                 if self.ctx is None:
                     self.ctx = tls_context(self.cfg)
                 ctx = self.ctx
-        if job["peer"]:
-            u = urlparse(f["senderUrl"])
-            alt = u._replace(netloc="%s%s" % (job["peer"], (":%d" % u.port) if u.port else "")).geturl()
-            if alt not in urls:
-                urls.append(alt)
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None                       # the redirect is then an error, not followed
+        handlers = [_NoRedirect()] + ([urllib.request.HTTPSHandler(context=ctx)] if ctx is not None else [])
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), *handlers)
         last = None
         for url in urls:
             try:
-                with urllib.request.urlopen(url, timeout=20, context=ctx) as r:
+                with opener.open(url, timeout=20) as r:
                     data = r.read(self.max_bytes + 1)
                 if len(data) > self.max_bytes:
                     raise RuntimeError("too big (over %g MB)" % (self.max_bytes / 1048576.0))

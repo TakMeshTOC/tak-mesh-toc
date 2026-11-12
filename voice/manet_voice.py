@@ -617,8 +617,23 @@ def control_server(gw):
             self.end_headers()
             self.wfile.write(b)
 
+        def _from_chat(self):
+            """Only Chat talks to this port. A web page open in the deck's browser can reach a loopback port too, so:
+            Chat's header (a page on another site can't send it), no Origin (a browser adds one to such requests),
+            and a loopback Host (blocks DNS-rebinding tricks)."""
+            if self.headers.get("X-Deck") != "1" or self.headers.get("Origin"):
+                return False
+            h = (self.headers.get("Host") or "").strip().lower()
+            if not h.startswith("["):
+                h = h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+            else:
+                h = h[1:].split("]", 1)[0]
+            return h in ("127.0.0.1", "localhost", "::1")
+
         def do_GET(self):
             u = urlparse(self.path)
+            if not self._from_chat():
+                return self._json(403, {"error": "forbidden"})
             if u.path != "/listen":
                 return self._json(404, {"error": "not found"})
             name = parse_qs(u.query).get("tg", [""])[0]
@@ -656,6 +671,8 @@ def control_server(gw):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            if not self._from_chat():
+                return self._json(403, {"ok": False, "error": "forbidden"})
             if path == "/deckptt":
                 if gw.deck is None:
                     return self._json(409, {"ok": False, "error": "the PTT box is off (DECK_PTT = off in [voice])"})

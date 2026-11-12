@@ -154,10 +154,10 @@
     else if (O && O.replayed) r += row('chats waiting', 'none (' + O.replayed + ' sent after the restart)', '');
     if (O && !O.can_confirm) r += row('chat delivery', 'sent, <b>not confirmed</b>: the server does not answer pings' + (O.sent_unconfirmed ? ' (' + O.sent_unconfirmed + ' so far)' : ''), 'lv-warn');
     if (O && O.write_errors) r += row('chat outbox', '<b>NOT SAVED TO DISK</b> (' + O.write_errors + 'x): ' + esc(O.last_write_error), 'lv-bad');
-    r += row('server', esc(s.host) + ':' + s.port, 'nw');
+    r += row('server', s.host ? esc(s.host) + ':' + s.port : 'shown on the deck only', 'nw');
     r += row('reachable', s.reachable ? 'yes, ' + s.rtt_ms + ' ms' : 'NO', s.reachable ? '' : 'lv-bad');
     r += row('from server', (s.last_rx_age == null ? 'nothing yet' : age(s.last_rx_age)) + ' (' + s.rx_events.toLocaleString() + ')');
-    r += row('tailscale', s.tailscale_up ? 'up, ' + esc(s.tailscale_ip) : 'DOWN', (s.tailscale_up ? '' : 'lv-warn ') + 'nw');
+    r += row('tailscale', s.tailscale_up ? 'up' + (s.tailscale_ip ? ', ' + esc(s.tailscale_ip) : '') : 'DOWN', (s.tailscale_up ? '' : 'lv-warn ') + 'nw');
     $('s-rows').innerHTML = r;
   }
 

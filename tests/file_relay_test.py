@@ -30,12 +30,24 @@ class Phone(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         q = parse_qs(urlparse(self.path).query)
+        if "redir" in q:                      # a phone that answers "it's over there"
+            self.send_response(302); self.send_header("Location", q["redir"][0]); self.end_headers(); return
         d = FILES.get((q.get("file") or [""])[0])
         if d is None:
             self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Length", str(len(d))); self.end_headers(); self.wfile.write(d)
 phone = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Phone); PPORT = phone.server_address[1]
 threading.Thread(target=phone.serve_forever, daemon=True).start()
+
+# a web server that is NOT the phone (stands for the deck's own services, or a host on the Tailscale side)
+DECOY = []
+class Decoy(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        DECOY.append(self.path); d = FILES.get("decoy", b"")
+        self.send_response(200); self.send_header("Content-Length", str(len(d))); self.end_headers(); self.wfile.write(d)
+decoy = http.server.ThreadingHTTPServer(("127.0.0.2", 0), Decoy); DPORT = decoy.server_address[1]
+threading.Thread(target=decoy.serve_forever, daemon=True).start()
 
 # ---------------- fake server file API
 UPLOADS, TOOLS, WRAPPED, GETS = [], [], {}, []
@@ -234,6 +246,20 @@ async def main():
     UPLOADS.clear(); ACKS.clear(); p8 = os.urandom(4000); FILES["8b"] = p8
     fr.offer(notice("8b", p8, host="phone.invalid", ack="alt"), "127.0.0.1"); await settle(fr); out = await drain(q)
     check("link with an unreachable name: downloaded from the sender's address instead", len(UPLOADS) == 1 and out, ACKS)
+
+    # 5b. a notice can't point the deck at another machine: only the address it came from is ever asked
+    UPLOADS.clear(); ACKS.clear(); pd = os.urandom(2000); FILES["decoy"] = pd
+    nd = notice("decoy", pd, ack="ssrf").replace(b"http://127.0.0.1:%d/" % PPORT, b"http://127.0.0.2:%d/" % DPORT)
+    fr.offer(nd, "127.0.0.1"); await settle(fr); await drain(q, 0.5)
+    check("link naming another machine: that machine is never asked, nothing uploaded, the phone is told",
+          not DECOY and not UPLOADS and any(b'uid="ssrf"' in a and b'success="false"' in a for a in ACKS), (DECOY, ACKS))
+    DECOY.clear(); UPLOADS.clear(); ACKS.clear()
+    nr = notice("decoy", pd, ack="redir").replace(b"getfile?file=decoy", b"getfile?redir=http://127.0.0.2:%d/x" % DPORT)
+    fr.offer(nr, "127.0.0.1"); await settle(fr); await drain(q, 0.5)
+    check("phone redirecting to another machine: not followed, nothing uploaded",
+          not DECOY and not UPLOADS and any(b'uid="redir"' in a and b'success="false"' in a for a in ACKS), (DECOY, ACKS))
+    FILES["np"] = os.urandom(500); fr.offer(notice("np", FILES["np"], ack="nopeer"), ""); await settle(fr); await drain(q, 0.5)
+    check("notice with no sender address: refused", not UPLOADS, UPLOADS)
 
     # 6. the paths into the file relay; never forwarded raw
     UPLOADS.clear(); p9 = os.urandom(3000); FILES["9b"] = p9

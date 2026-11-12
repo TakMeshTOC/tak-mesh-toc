@@ -1094,7 +1094,7 @@ class Handler(BaseHTTPRequestHandler):
         h, p = hostport(self.chat.cfg.get("VOICE_CONTROL", "127.0.0.1:17016"))
         try:
             up = socket.create_connection((h, p), timeout=5)
-            up.sendall(("GET /listen?tg=%s HTTP/1.0\r\nHost: voice\r\n\r\n" % quote(tg)).encode())
+            up.sendall(("GET /listen?tg=%s HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Deck: 1\r\n\r\n" % quote(tg)).encode())
             head = b""
             while b"\r\n\r\n" not in head and len(head) < 8192:
                 b = up.recv(4096)
@@ -1228,7 +1228,7 @@ class Handler(BaseHTTPRequestHandler):
             req = {"tg": str(body.get("tg", ""))[:16]} if ptt else {"tg": str(body.get("tg", ""))[:16], "on": bool(body.get("on"))}
             try:
                 c = self._voice_conn(5)
-                c.request("POST", "/deckptt" if ptt else "/bridge", json.dumps(req), {"Content-Type": "application/json"})
+                c.request("POST", "/deckptt" if ptt else "/bridge", json.dumps(req), {"Content-Type": "application/json", "X-Deck": "1"})
                 rr = c.getresponse()
                 out = rr.read(4096)
                 c.close()

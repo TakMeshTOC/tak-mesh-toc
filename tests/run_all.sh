@@ -45,6 +45,7 @@ run mesh_nodes_test.py
 run wizard_test.py
 run echo_test.py
 run look_test.py
+run mesh_view_test.py
 run voice_test.py "$PKG"
 run deckptt_test.py "$PKG"
 run nomesh_test.py "$PKG"
